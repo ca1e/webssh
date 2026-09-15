@@ -33,6 +33,9 @@ func validPort(p int) error {
 }
 
 func (s *Session) AddForward(typ, remoteHost string, listenPort, remotePort int) (*Forward, error) {
+	if s.isTelnet() {
+		return nil, ErrSSHOnly
+	}
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}

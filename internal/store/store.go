@@ -16,13 +16,26 @@ import (
 const (
 	AuthPassword = "password"
 	AuthKey      = "key"
+
+	ConnSSH    = "ssh"
+	ConnTelnet = "telnet"
 )
 
+// NormalizeConnType 归一化连接方式:空值/未知值回落 SSH,兼容无 conn_type 的旧数据。
+func NormalizeConnType(t string) string {
+	if t == ConnTelnet {
+		return ConnTelnet
+	}
+	return ConnSSH
+}
+
 type Host struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	// ConnType 连接协议,取值 NormalizeConnType 归一化后的结果
+	ConnType   string `json:"conn_type"`
 	Username   string `json:"username"`
 	AuthType   string `json:"auth_type"`
 	Password   string `json:"password,omitempty"`
@@ -143,18 +156,20 @@ func (s *Store) Delete(id string) bool {
 
 // hostWire 是 hosts.json 的磁盘格式:密码/口令以 base64 编码存储(混淆,非加密)。
 type hostWire struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Username   string `json:"username"`
-	AuthType   string `json:"auth_type"`
-	Password   string `json:"password,omitempty"`
-	KeyPath    string `json:"key_path,omitempty"`
-	Passphrase string `json:"passphrase,omitempty"`
-	JumpID     string `json:"jump_id,omitempty"`
-	Group      string `json:"group,omitempty"`
-	StartupCmd string `json:"startup_cmd,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	ConnType      string `json:"conn_type,omitempty"`
+	Username      string `json:"username"`
+	AuthType      string `json:"auth_type"`
+	Password      string `json:"password,omitempty"`
+	KeyPath       string `json:"key_path,omitempty"`
+	Passphrase    string `json:"passphrase,omitempty"`
+	JumpID        string `json:"jump_id,omitempty"`
+	Group         string `json:"group,omitempty"`
+	StartupCmd    string `json:"startup_cmd,omitempty"`
+	FollowSSHPath bool   `json:"follow_ssh_path,omitempty"`
 }
 
 func b64enc(s string) string {
@@ -179,10 +194,12 @@ func b64dec(field, host string, s string) (string, error) {
 func toWire(h Host) hostWire {
 	return hostWire{
 		ID: h.ID, Name: h.Name, Host: h.Host, Port: h.Port,
+		ConnType: h.ConnType,
 		Username: h.Username, AuthType: h.AuthType,
 		Password: b64enc(h.Password), KeyPath: h.KeyPath,
 		Passphrase: b64enc(h.Passphrase), JumpID: h.JumpID,
 		Group: h.Group, StartupCmd: h.StartupCmd,
+		FollowSSHPath: h.FollowSSHPath,
 	}
 }
 
@@ -197,10 +214,12 @@ func fromWire(w hostWire) (Host, error) {
 	}
 	return Host{
 		ID: w.ID, Name: w.Name, Host: w.Host, Port: w.Port,
+		ConnType: NormalizeConnType(w.ConnType),
 		Username: w.Username, AuthType: w.AuthType,
 		Password: password, KeyPath: w.KeyPath,
 		Passphrase: passphrase, JumpID: w.JumpID,
 		Group: w.Group, StartupCmd: w.StartupCmd,
+		FollowSSHPath: w.FollowSSHPath,
 	}, nil
 }
 

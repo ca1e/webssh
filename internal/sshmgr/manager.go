@@ -227,6 +227,14 @@ func dialThroughJump(ctx context.Context, jc *ssh.Client, targetAddr string) (ne
 
 // TestConnection 只验证拨号与认证,不保留连接。
 func (m *Manager) TestConnection(ctx context.Context, h store.Host, jump *store.Host) error {
+	if store.NormalizeConnType(h.ConnType) == store.ConnTelnet {
+		conn, addr, err := dialTelnet(ctx, h)
+		if err != nil {
+			return fmt.Errorf("连接 %s 失败: %w", addr, err)
+		}
+		conn.Close()
+		return nil
+	}
 	if jump != nil {
 		jc, err := m.dialHost(ctx, *jump, false)
 		if err != nil {
@@ -257,9 +265,12 @@ func (m *Manager) TestConnection(ctx context.Context, h store.Host, jump *store.
 	return nil
 }
 
-// OpenSession 建立 SSH 连接;jump 非空时经跳板机二级拨号。
+// OpenSession 按主机连接方式建立会话;jump 非空时经跳板机二级拨号(SSH)。
 // ctx 来自发起请求,客户端取消等待时中止拨号并回收连接。
 func (m *Manager) OpenSession(ctx context.Context, h store.Host, jump *store.Host, trustNewKey bool) (*Session, error) {
+	if store.NormalizeConnType(h.ConnType) == store.ConnTelnet {
+		return m.openTelnetSession(ctx, h)
+	}
 	m.mu.Lock()
 	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
 		m.mu.Unlock()
@@ -308,6 +319,7 @@ func (m *Manager) OpenSession(ctx context.Context, h store.Host, jump *store.Hos
 		JumpHost:   jump,
 		jumpClient: jumpCli,
 		client:     client,
+		connType:   store.ConnSSH,
 		targetAddr: targetStr,
 		OpenedAt:   time.Now(),
 		forwards:   map[string]*Forward{},
@@ -317,6 +329,28 @@ func (m *Manager) OpenSession(ctx context.Context, h store.Host, jump *store.Hos
 		FollowSSHPath: h.FollowSSHPath,
 	}
 	go s.keepalive()
+	m.mu.Lock()
+	m.sessions[s.ID] = s
+	m.mu.Unlock()
+	return s, nil
+}
+
+// openTelnetSession 建立 telnet 会话:连接即交互终端,登录在终端内透传完成。
+func (m *Manager) openTelnetSession(ctx context.Context, h store.Host) (*Session, error) {
+	conn, addr, err := dialTelnet(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("连接 %s 失败: %w", addr, err)
+	}
+	s := &Session{
+		ID:         store.NewID(),
+		Host:       h,
+		conn:       conn,
+		connType:   store.ConnTelnet,
+		targetAddr: addr,
+		OpenedAt:   time.Now(),
+		forwards:   map[string]*Forward{},
+		mgr:        m,
+	}
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -342,6 +376,8 @@ type Session struct {
 	closed     bool
 	client     *ssh.Client
 	jumpClient *ssh.Client // 非空时由本会话持有并负责关闭
+	conn       net.Conn    // telnet 会话的底层连接(ssh 会话为 nil)
+	connType   string
 	targetAddr string
 
 	sftpOnce   sync.Once
@@ -359,6 +395,12 @@ type Session struct {
 	// cwd 跟踪远程 shell 当前目录:由 OSC 7 序列或前端识别的 cd 命令更新,
 	// 供 SFTP 面板单向同步(会话 → SFTP)。
 	cwd string
+
+	// cwdSubs 是 cwd 变更通知的订阅者集合(终端 WS 经此把变更推给前端,
+	// 替代 SFTP 面板的轮询)。通知为尽力语义:channel 满即丢弃,消费者
+	// 醒来后应调 Cwd() 取最新值。
+	cwdSubMu sync.Mutex
+	cwdSubs  map[chan string]struct{}
 
 	// StartupCmd 连接后自动执行的命令(无 PTY,失败不中断)。
 	StartupCmd string
@@ -378,6 +420,11 @@ func (s *Session) Name() string     { return s.Host.Name }
 func (s *Session) IP() string       { return s.Host.Host }
 func (s *Session) Username() string { return s.Host.Username }
 func (s *Session) Addr() string     { return s.targetAddr }
+
+// ConnType 返回会话连接协议(store.ConnSSH / store.ConnTelnet)。
+func (s *Session) ConnType() string { return s.connType }
+
+func (s *Session) isTelnet() bool { return s.connType == store.ConnTelnet }
 
 func (s *Session) checkOpen() error {
 	s.mu.Lock()
@@ -418,7 +465,7 @@ func (s *Session) Close() {
 		f.stop()
 	}
 	s.forwards = map[string]*Forward{}
-	client, jump := s.client, s.jumpClient
+	client, jump, conn := s.client, s.jumpClient, s.conn
 	s.mu.Unlock()
 
 	if client != nil {
@@ -427,14 +474,18 @@ func (s *Session) Close() {
 	if jump != nil {
 		jump.Close()
 	}
+	if conn != nil {
+		conn.Close()
+	}
 	s.mgr.mu.Lock()
 	delete(s.mgr.sessions, s.ID)
 	s.mgr.mu.Unlock()
 }
 
-// Terminal 一次交互式 shell 会话(PTY)。
+// Terminal 一次交互式 shell 会话:SSH 为 PTY 通道,telnet 为裸连接透传。
 type Terminal struct {
-	sess   *ssh.Session
+	sess   *ssh.Session // SSH 通道;telnet 为 nil
+	closer io.Closer    // sess 为空时的关闭通道(telnet 连接)
 	stdin  io.WriteCloser
 	stdout io.Reader
 	// initLine 注入交互式 shell 的 OSC 7 集成行(不含提交符 \r),供 handler
@@ -469,11 +520,20 @@ func (t *Terminal) osc7Watchdog() {
 }
 
 func (t *Terminal) Resize(cols, rows int) error {
+	if t.sess == nil {
+		return nil // 连接未提供窗口尺寸通道,保持远端默认
+	}
 	return t.sess.WindowChange(rows, cols)
 }
 
 func (t *Terminal) Close() error {
-	return t.sess.Close()
+	if t.sess != nil {
+		return t.sess.Close()
+	}
+	if t.closer != nil {
+		return t.closer.Close()
+	}
+	return nil
 }
 
 // NewTerminal 申请 PTY 并启动交互式 shell。TERM 固定 xterm-256color,
@@ -491,6 +551,18 @@ func (t *Terminal) Close() error {
 //
 // 未勾选时为普通连接:Shell 请求 + 仅提交 startupCmd(如有),无任何注入。
 func (s *Session) NewTerminal(cols, rows int, startupCmd string) (*Terminal, error) {
+	if s.isTelnet() {
+		if err := s.checkOpen(); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		conn := s.conn
+		s.mu.Unlock()
+		if conn == nil {
+			return nil, fmt.Errorf("会话已断开")
+		}
+		return newTelnetTerminal(conn), nil
+	}
 	if cols <= 0 {
 		cols = 80
 	}
@@ -661,6 +733,9 @@ _WS_DIR="$d" ZDOTDIR="$d" exec ` + q + ` -l -i`
 // NewCommandTerminal 与 NewTerminal 类似,但在 PTY 中执行自定义命令而非登录 shell。
 // 用于 docker exec 等场景。cmd 为空时等同 NewTerminal。
 func (s *Session) NewCommandTerminal(cols, rows int, cmd string) (*Terminal, error) {
+	if s.isTelnet() {
+		return nil, ErrSSHOnly
+	}
 	if cols <= 0 {
 		cols = 80
 	}
@@ -712,6 +787,9 @@ func (s *Session) RunStream(cmd string) (io.Reader, func(), error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, nil, err
 	}
+	if s.isTelnet() {
+		return nil, nil, ErrSSHOnly
+	}
 	s.mu.Lock()
 	client := s.client
 	s.mu.Unlock()
@@ -740,6 +818,9 @@ func (s *Session) RunStream(cmd string) (io.Reader, func(), error) {
 func (s *Session) SFTP() (*sftp.Client, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
+	}
+	if s.isTelnet() {
+		return nil, ErrSSHOnly
 	}
 	s.sftpOnce.Do(func() {
 		s.sftpClient, s.sftpErr = sftp.NewClient(s.client)
@@ -788,6 +869,9 @@ func (s *Session) Cwd() string {
 func (s *Session) Run(cmd string) (string, error) {
 	if err := s.checkOpen(); err != nil {
 		return "", err
+	}
+	if s.isTelnet() {
+		return "", ErrSSHOnly
 	}
 	s.mu.Lock()
 	client := s.client
@@ -847,13 +931,49 @@ func (s *Session) checkForwardAllowed() (bool, string) {
 
 // SetCwd 更新跟踪的远程 shell 当前目录,仅接受不含控制字符的绝对路径
 // (输出流解析异常时可能混入转义序列,直接丢弃本次更新,保持上次的有效值)。
+// 值实际变化时向全部订阅者广播新路径。
 func (s *Session) SetCwd(p string) {
 	if p == "" || !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\x1b\x07\r\n") {
 		return
 	}
 	s.mu.Lock()
+	changed := s.cwd != p
 	s.cwd = p
 	s.mu.Unlock()
+	if changed {
+		s.notifyCwd(p)
+	}
+}
+
+// SubscribeCwd 订阅 cwd 变更通知。返回的 channel 缓冲 1,只承诺"有变更"
+// 事件而非每一个中间值;调用方退出前必须 UnsubscribeCwd。
+func (s *Session) SubscribeCwd() chan string {
+	ch := make(chan string, 1)
+	s.cwdSubMu.Lock()
+	if s.cwdSubs == nil {
+		s.cwdSubs = make(map[chan string]struct{})
+	}
+	s.cwdSubs[ch] = struct{}{}
+	s.cwdSubMu.Unlock()
+	return ch
+}
+
+// UnsubscribeCwd 注销订阅。
+func (s *Session) UnsubscribeCwd(ch chan string) {
+	s.cwdSubMu.Lock()
+	delete(s.cwdSubs, ch)
+	s.cwdSubMu.Unlock()
+}
+
+func (s *Session) notifyCwd(p string) {
+	s.cwdSubMu.Lock()
+	defer s.cwdSubMu.Unlock()
+	for ch := range s.cwdSubs {
+		select {
+		case ch <- p:
+		default: // 缓冲已满:消费者将以 Cwd()/帧内路径收敛到最新值
+		}
+	}
 }
 
 // ScanOSC7 从 PTY 输出流中提取 OSC 7 序列报告的目录并更新 cwd。

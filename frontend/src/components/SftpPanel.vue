@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUp,
@@ -33,6 +33,7 @@ import {
   sessionCwd,
   transfersWSUrl,
 } from '../api'
+import { onCwd } from '../cwdBus'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -138,7 +139,7 @@ const bottomTarget = computed({
 })
 
 const sessionOptions = computed(() =>
-  (props.sessions || []).filter((x) => x.id !== props.session.id)
+  (props.sessions || []).filter((x) => x.id !== props.session.id && x.connType !== 'telnet')
 )
 
 function switchBottom(v) {
@@ -169,20 +170,56 @@ function switchBottom(v) {
 }
 
 // ---------- 会话 cwd → SFTP 面板单向同步 ----------
+// 实时通道:后端 OSC 7 提示符钩子命中 → terminalWS 推 {"type":"cwd"} →
+// cwd 事件总线,面板订阅即得,无需轮询。兜底:面板可见时 30s 低频对账一次
+// (防 WS 帧丢失、双远程目标会话无终端连接等场景)。
 // 仅当会话 cwd 与上次同步值不同才跟随,手动输入的目录不会被覆盖。
 
 let lastSyncedTop = ''
 let lastSyncedBottom = ''
 let cwdTimer = null
+let offTopCwd = null
+let offBottomCwd = null
 
-async function pollCwd() {
+function applyTopCwd(path) {
+  if (path && path !== lastSyncedTop) {
+    lastSyncedTop = path
+    if (remote.path !== path) load(remote, path)
+  }
+}
+
+function applyBottomCwd(path) {
+  if (path && path !== lastSyncedBottom) {
+    lastSyncedBottom = path
+    if (local.path !== path) load(local, path)
+  }
+}
+
+// 下面板指向的会话随切换订阅/退订 cwd 事件
+watch(
+  () => local.sid,
+  (sid) => {
+    if (offBottomCwd) {
+      offBottomCwd()
+      offBottomCwd = null
+    }
+    if (sid && local.kind === 'remote') offBottomCwd = onCwd(sid, applyBottomCwd)
+  }
+)
+
+// 面板是否可见:所属会话标签页被切走时 el-tab-pane 以 display:none 隐藏,
+// 此时 offsetParent 为 null;浏览器标签页后台时 visibilityState 为 hidden。
+function panelVisible() {
+  if (document.visibilityState !== 'visible') return false
+  const el = rootEl.value
+  return !!el && !!el.offsetParent
+}
+
+async function syncCwd() {
   // 上面板跟随当前会话
   try {
     const res = await sessionCwd(props.session.id)
-    if (res.path && res.path !== lastSyncedTop) {
-      lastSyncedTop = res.path
-      if (remote.path !== res.path) load(remote, res.path)
-    }
+    applyTopCwd(res.path)
   } catch {
     /* 会话断开等场景忽略 */
   }
@@ -190,10 +227,7 @@ async function pollCwd() {
   if (local.kind === 'remote' && local.sid) {
     try {
       const res = await sessionCwd(local.sid)
-      if (res.path && res.path !== lastSyncedBottom) {
-        lastSyncedBottom = res.path
-        if (local.path !== res.path) load(local, res.path)
-      }
+      applyBottomCwd(res.path)
     } catch {
       /* 忽略 */
     }
@@ -493,7 +527,11 @@ onMounted(async () => {
   }
   load(remote, lastSyncedTop)
   load(local, '')
-  cwdTimer = setInterval(pollCwd, 2000)
+  offTopCwd = onCwd(props.session.id, applyTopCwd)
+  // 兜底对账:仅面板可见时执行,不可见时推送通道仍在后台正常驱动跟随
+  cwdTimer = setInterval(() => {
+    if (panelVisible()) syncCwd()
+  }, 30000)
   connectTransferWS()
   refreshTasksFallback() // 首帧立即同步一次,不等 WS 首推
   window.addEventListener('click', closeDd)
@@ -503,6 +541,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (cwdTimer) clearInterval(cwdTimer)
+  if (offTopCwd) offTopCwd()
+  if (offBottomCwd) offBottomCwd()
   transferWSDisposed = true
   if (transferWSRetryTimer) clearTimeout(transferWSRetryTimer)
   if (transferWS) {

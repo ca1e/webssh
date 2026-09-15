@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { terminalWSUrl } from '../api'
+import { emitCwd } from '../cwdBus'
 
 const props = defineProps({
   sid: { type: String, required: true },
@@ -171,6 +172,8 @@ function connect() {
       try {
         const msg = JSON.parse(ev.data)
         if (msg.type === 'exit') status.value = 'exited'
+        // shell 目录变更推送:转发给 cwd 总线,驱动 SFTP 面板跟随
+        else if (msg.type === 'cwd') emitCwd(props.sid, msg.path)
       } catch {
         /* 忽略 */
       }

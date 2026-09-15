@@ -43,7 +43,10 @@ func (a *API) openSession(c *gin.Context) {
 		fail(c, 400, err.Error())
 		return
 	}
-	resp := gin.H{"session_id": s.ID, "name": h.Name, "host": h.Host, "username": h.Username}
+	resp := gin.H{
+		"session_id": s.ID, "name": h.Name, "host": h.Host,
+		"username": h.Username, "conn_type": s.ConnType(),
+	}
 	if jump != nil {
 		resp["jump_name"] = jump.Name
 	}
@@ -55,13 +58,14 @@ type sessionView struct {
 	Name     string `json:"name"`
 	Host     string `json:"host"`
 	Username string `json:"username"`
+	ConnType string `json:"conn_type"`
 	JumpName string `json:"jump_name,omitempty"`
 }
 
 func (a *API) listSessions(c *gin.Context) {
 	out := []sessionView{}
 	for _, s := range a.mgr.List() {
-		v := sessionView{ID: s.ID, Name: s.Name(), Host: s.IP(), Username: s.Username()}
+		v := sessionView{ID: s.ID, Name: s.Name(), Host: s.IP(), Username: s.Username(), ConnType: s.ConnType()}
 		if s.JumpHost != nil {
 			v.JumpName = s.JumpHost.Name
 		}

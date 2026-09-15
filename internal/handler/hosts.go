@@ -20,6 +20,7 @@ type hostView struct {
 	Name          string `json:"name"`
 	Host          string `json:"host"`
 	Port          int    `json:"port"`
+	ConnType      string `json:"conn_type"`
 	Username      string `json:"username"`
 	AuthType      string `json:"auth_type"`
 	KeyPath       string `json:"key_path"`
@@ -31,9 +32,18 @@ type hostView struct {
 	HasPassphrase bool   `json:"has_passphrase"`
 }
 
+// defaultPort 返回连接方式的默认端口。
+func defaultPort(connType string) int {
+	if connType == store.ConnTelnet {
+		return 23
+	}
+	return 22
+}
+
 func toView(h store.Host) hostView {
 	return hostView{
 		ID: h.ID, Name: h.Name, Host: h.Host, Port: orDefault(h.Port, 22),
+		ConnType: h.ConnType,
 		Username: h.Username, AuthType: h.AuthType, KeyPath: h.KeyPath,
 		JumpID: h.JumpID, Group: h.Group, StartupCmd: h.StartupCmd,
 		FollowSSHPath: h.FollowSSHPath,
@@ -53,6 +63,7 @@ type hostReq struct {
 	Name          string `json:"name"`
 	Host          string `json:"host"`
 	Port          int    `json:"port"`
+	ConnType      string `json:"conn_type"`
 	Username      string `json:"username"`
 	AuthType      string `json:"auth_type"`
 	Password      string `json:"password"`
@@ -73,12 +84,16 @@ func (a *API) listHosts(c *gin.Context) {
 	c.JSON(200, out)
 }
 
+// validateHost 校验公共字段与按连接方式的必填项。
 func validateHost(req hostReq) string {
 	if strings.TrimSpace(req.Name) == "" {
 		return "名称不能为空"
 	}
 	if strings.TrimSpace(req.Host) == "" {
 		return "主机 IP 不能为空"
+	}
+	if store.NormalizeConnType(req.ConnType) == store.ConnTelnet {
+		return "" // telnet 只需 名称/主机/端口
 	}
 	if strings.TrimSpace(req.Username) == "" {
 		return "用户名不能为空"
@@ -95,22 +110,26 @@ func (a *API) createHost(c *gin.Context) {
 		fail(c, 400, "参数错误: "+err.Error())
 		return
 	}
+	ct := store.NormalizeConnType(req.ConnType)
 	if msg := validateHost(req); msg != "" {
 		fail(c, 400, msg)
 		return
 	}
-	if req.AuthType == store.AuthPassword && req.Password == "" {
-		fail(c, 400, "密码认证必须填写密码")
-		return
-	}
-	if req.AuthType == store.AuthKey && req.KeyPath == "" {
-		fail(c, 400, "私钥认证必须填写私钥路径")
-		return
+	if ct == store.ConnSSH {
+		if req.AuthType == store.AuthPassword && req.Password == "" {
+			fail(c, 400, "密码认证必须填写密码")
+			return
+		}
+		if req.AuthType == store.AuthKey && req.KeyPath == "" {
+			fail(c, 400, "私钥认证必须填写私钥路径")
+			return
+		}
 	}
 	h, err := a.st.Put(store.Host{
 		Name: strings.TrimSpace(req.Name), Host: strings.TrimSpace(req.Host),
-		Port: orDefault(req.Port, 22), Username: strings.TrimSpace(req.Username),
-		AuthType: req.AuthType, Password: req.Password, KeyPath: req.KeyPath,
+		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
+		Username:      strings.TrimSpace(req.Username),
+		AuthType:      req.AuthType, Password: req.Password, KeyPath: req.KeyPath,
 		Passphrase: req.Passphrase, JumpID: req.JumpID,
 		Group: strings.TrimSpace(req.Group), StartupCmd: req.StartupCmd,
 		FollowSSHPath: req.FollowSSHPath,
@@ -135,30 +154,44 @@ func (a *API) updateHost(c *gin.Context) {
 		fail(c, 400, "参数错误: "+err.Error())
 		return
 	}
+	ct := store.NormalizeConnType(req.ConnType)
 	if msg := validateHost(req); msg != "" {
 		fail(c, 400, msg)
 		return
 	}
-	if req.AuthType == store.AuthPassword && req.Password == "" && old.Password == "" {
-		fail(c, 400, "密码认证必须填写密码")
-		return
+	// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空
+	username, authType := strings.TrimSpace(req.Username), req.AuthType
+	password, keyPath, passphrase := pickSecret(req.Password, old.Password),
+		pickSecret(req.KeyPath, old.KeyPath), pickSecret(req.Passphrase, old.Passphrase)
+	jumpID, startupCmd, follow := req.JumpID, req.StartupCmd, req.FollowSSHPath
+	if ct == store.ConnTelnet {
+		username, authType = "", ""
+		password, keyPath, passphrase = "", "", ""
+		jumpID, startupCmd, follow = "", "", false
 	}
-	if req.AuthType == store.AuthKey && req.KeyPath == "" && old.KeyPath == "" {
-		fail(c, 400, "私钥认证必须填写私钥路径")
-		return
+	if ct == store.ConnSSH {
+		if req.AuthType == store.AuthPassword && req.Password == "" && old.Password == "" {
+			fail(c, 400, "密码认证必须填写密码")
+			return
+		}
+		if req.AuthType == store.AuthKey && req.KeyPath == "" && old.KeyPath == "" {
+			fail(c, 400, "私钥认证必须填写私钥路径")
+			return
+		}
 	}
 	h, err := a.st.Put(store.Host{
 		ID:   id,
 		Name: strings.TrimSpace(req.Name), Host: strings.TrimSpace(req.Host),
-		Port: orDefault(req.Port, 22), Username: strings.TrimSpace(req.Username),
-		AuthType:      req.AuthType,
-		Password:      pickSecret(req.Password, old.Password),
-		KeyPath:       pickSecret(req.KeyPath, old.KeyPath),
-		Passphrase:    pickSecret(req.Passphrase, old.Passphrase),
-		JumpID:        req.JumpID,
+		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
+		Username:      username,
+		AuthType:      authType,
+		Password:      password,
+		KeyPath:       keyPath,
+		Passphrase:    passphrase,
+		JumpID:        jumpID,
 		Group:         strings.TrimSpace(req.Group),
-		StartupCmd:    req.StartupCmd,
-		FollowSSHPath: req.FollowSSHPath,
+		StartupCmd:    startupCmd,
+		FollowSSHPath: follow,
 	})
 	if err != nil {
 		fail(c, 500, err.Error())
@@ -185,6 +218,7 @@ func (a *API) duplicateHost(c *gin.Context) {
 		Name:          old.Name + " - copy",
 		Host:          old.Host,
 		Port:          old.Port,
+		ConnType:      old.ConnType,
 		Username:      old.Username,
 		AuthType:      old.AuthType,
 		Password:      old.Password,
@@ -228,13 +262,15 @@ func (a *API) testHost(c *gin.Context) {
 		fail(c, 400, "参数错误: "+err.Error())
 		return
 	}
+	ct := store.NormalizeConnType(req.ConnType)
 	h := store.Host{
-		Name: req.Name, Host: strings.TrimSpace(req.Host), Port: orDefault(req.Port, 22),
+		Name: req.Name, Host: strings.TrimSpace(req.Host), Port: orDefault(req.Port, defaultPort(ct)),
+		ConnType: ct,
 		Username: strings.TrimSpace(req.Username), AuthType: req.AuthType,
 		Password: req.Password, KeyPath: req.KeyPath, Passphrase: req.Passphrase,
 		JumpID: req.JumpID, Group: strings.TrimSpace(req.Group), StartupCmd: req.StartupCmd,
 	}
-	if req.ID != "" {
+	if req.ID != "" && ct == store.ConnSSH {
 		if old, ok := a.st.Get(req.ID); ok {
 			if h.Password == "" {
 				h.Password = old.Password

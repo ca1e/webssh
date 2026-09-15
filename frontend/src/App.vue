@@ -12,7 +12,8 @@ import HostPanel from './components/HostPanel.vue'
 import DockerPanel from './components/DockerPanel.vue'
 import ContainerLogsPanel from './components/ContainerLogsPanel.vue'
 import TerminalPane from './components/TerminalPane.vue'
-import { closeSession, deleteHost, duplicateHost, listHosts, openSession } from './api'
+import LockScreen from './components/LockScreen.vue'
+import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, openSession } from './api'
 import { isDark, settings } from './settings'
 
 const hosts = ref([])
@@ -324,11 +325,27 @@ async function loadHosts() {
     ElMessage.error(e.message)
   }
 }
-onMounted(() => {
-  loadHosts()
+// 启动密码锁屏期间不加载业务数据;解锁/任意请求 401 时经 authState 切换渲染
+async function checkLock() {
+  try {
+    const st = await authStatus()
+    authState.hasPassword = !!st.has_password
+    authState.locked = !!st.locked
+  } catch {
+    /* 后端不可达:保持默认不锁,由具体请求的错误提示兜底 */
+  }
+}
+
+onMounted(async () => {
+  await checkLock()
+  if (!authState.locked) loadHosts()
   window.addEventListener('click', onGlobalClick)
   window.addEventListener('blur', onGlobalClick)
 })
+
+function onUnlocked() {
+  loadHosts()
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('click', onGlobalClick)
@@ -356,6 +373,7 @@ async function connect(host, trustNewKey = false) {
     name: n === 1 ? host.name : `${host.name}(${n})`,
     host: host.host,
     username: host.username,
+    connType: host.conn_type === 'telnet' ? 'telnet' : 'ssh',
     jumpName: hosts.value.find((x) => x.id === host.jump_id)?.name || '',
     flash: false,
     sftpOpen: false,
@@ -394,6 +412,7 @@ async function runConnect(s, host, trustNewKey) {
     s.id = res.session_id
     s.host = res.host
     s.username = res.username
+    if (res.conn_type) s.connType = res.conn_type
     s.jumpName = res.jump_name || ''
     s.status = 'open'
     if (wasActive) activeId.value = s.id
@@ -428,7 +447,7 @@ async function runConnect(s, host, trustNewKey) {
 function retryConnect(s) {
   if (connecting.has(s.hostId)) return
   const host = hosts.value.find((h) => h.id === s.hostId) ||
-    { id: s.hostId, name: s.name, host: s.host, username: s.username }
+    { id: s.hostId, name: s.name, host: s.host, username: s.username, conn_type: s.connType }
   s.status = 'connecting'
   s.errMsg = ''
   runConnect(s, host, false)
@@ -537,6 +556,7 @@ async function duplicate(host) {
 
 <template>
   <div class="layout">
+    <LockScreen v-if="authState.locked" @unlocked="onUnlocked" />
     <header class="topbar">
       <el-button
         type="primary"
@@ -609,6 +629,7 @@ async function duplicate(host) {
             </div>
             <template v-else>
             <div class="session-toolbar">
+              <template v-if="s.connType !== 'telnet'">
               <el-button
                 size="small"
                 :type="s.sftpOpen ? 'primary' : 'default'"
@@ -647,6 +668,7 @@ async function duplicate(host) {
               >
                 Docker
               </el-button>
+              </template>
               <el-divider direction="vertical" />
               <el-button
                 size="small"
@@ -667,7 +689,7 @@ async function duplicate(host) {
                 上下分屏
               </el-button>
               <span class="muted toolbar-info">
-                {{ s.username }}@{{ s.host }}
+                {{ s.connType === 'telnet' ? s.host : `${s.username}@${s.host}` }}
                 <template v-if="s.jumpName">(经跳板机 {{ s.jumpName }})</template>
               </span>
             </div>

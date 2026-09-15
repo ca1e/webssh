@@ -133,13 +133,13 @@ func (b *wsBridge) readLoop(onMessage func(mt int, data []byte) bool) {
 }
 
 // osc7Reader 包装 PTY 输出流:转发字节的同时扫描 OSC 7 序列,跟踪远程 shell 目录;
-// 首次发现序列时回报终端(解除无感注入的降级看门狗)。
+// 首次发现序列时调用 markOSC7(可空,解除无感注入的降级看门狗)。
 type osc7Reader struct {
-	r       io.Reader
-	s       *sshmgr.Session
-	t       *sshmgr.Terminal // 可空:无终端上下文的场景不做标记
-	sawOSC7 bool
-	carry   []byte
+	r        io.Reader
+	s        *sshmgr.Session
+	markOSC7 func()
+	sawOSC7  bool
+	carry    []byte
 }
 
 func (o *osc7Reader) Read(p []byte) (int, error) {
@@ -148,8 +148,8 @@ func (o *osc7Reader) Read(p []byte) (int, error) {
 		merged := append(o.carry, p[:n]...)
 		if sshmgr.ScanOSC7(o.s, merged) {
 			o.sawOSC7 = true
-			if o.t != nil {
-				o.t.MarkOSC7()
+			if o.markOSC7 != nil {
+				o.markOSC7()
 			}
 		}
 		// 仅保留尾部:既覆盖跨帧被截断的序列(URL 编码的深路径序列可达数百字节),

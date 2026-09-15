@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive } from 'vue'
-import { ArrowDown, DArrowLeft, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, Connection, DArrowLeft, Monitor, Refresh } from '@element-plus/icons-vue'
 import { settings } from '../settings'
 
 const props = defineProps({
@@ -120,6 +120,10 @@ onBeforeUnmount(() => {
             @dblclick="onDblClick(h)"
             @contextmenu.prevent="openMenu(h, $event)"
           >
+            <el-icon class="conn-proto" :class="h.conn_type === 'telnet' ? 'telnet' : 'ssh'">
+              <Connection v-if="h.conn_type === 'telnet'" />
+              <Monitor v-else />
+            </el-icon>
             <div class="conn-info">
               <div class="conn-name">{{ h.name }}</div>
               <div class="conn-host">{{ h.host }}:{{ h.port }} · {{ h.username }}</div>

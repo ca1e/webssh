@@ -193,3 +193,48 @@ func TestSeamlessCmdUnknownShell(t *testing.T) {
 		}
 	}
 }
+
+func TestCwdSubscribeNotify(t *testing.T) {
+	s := &Session{}
+	ch := s.SubscribeCwd()
+	defer s.UnsubscribeCwd(ch)
+
+	recv := func() (string, bool) {
+		select {
+		case p := <-ch:
+			return p, true
+		default:
+			return "", false
+		}
+	}
+
+	s.SetCwd("/a")
+	if p, ok := recv(); !ok || p != "/a" {
+		t.Fatalf("首次变更应收到通知 /a,得到 %q ok=%v", p, ok)
+	}
+	// 同值不广播
+	s.SetCwd("/a")
+	if p, ok := recv(); ok {
+		t.Fatalf("同值不应广播,得到 %q", p)
+	}
+	// 非法值不广播
+	s.SetCwd("/bad\x1b")
+	if _, ok := recv(); ok {
+		t.Fatal("非法值不应广播")
+	}
+	// 缓冲满即丢:连续变更不阻塞发送方,订阅方最终读到最新值
+	s.SetCwd("/b")
+	s.SetCwd("/c")
+	if p, ok := recv(); !ok || p != "/b" {
+		t.Fatalf("应收到首条 /b,得到 %q ok=%v", p, ok)
+	}
+	if got := s.Cwd(); got != "/c" {
+		t.Fatalf("Cwd() 应为最新值 /c,得到 %q", got)
+	}
+	// 退订后不再收到
+	s.UnsubscribeCwd(ch)
+	s.SetCwd("/d")
+	if p, ok := recv(); ok {
+		t.Fatalf("退订后不应收到通知,得到 %q", p)
+	}
+}

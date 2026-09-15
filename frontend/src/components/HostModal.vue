@@ -19,6 +19,7 @@ const form = reactive({
   name: '',
   host: '',
   port: 22,
+  conn_type: 'ssh',
   username: 'root',
   auth_type: 'password',
   password: '',
@@ -30,13 +31,28 @@ const form = reactive({
   follow_ssh_path: false,
 })
 
-const rules = {
-  name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
-  host: [{ required: true, message: '请输入主机 IP', trigger: 'blur' }],
-  port: [{ required: true, message: '请输入端口', trigger: 'blur' }],
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  key_path: [{ required: true, message: '请选择或输入私钥路径', trigger: 'change' }],
-}
+const isTelnet = computed(() => form.conn_type === 'telnet')
+
+// 校验按连接方式裁剪:telnet 仅 名称/主机/端口
+const rules = computed(() => {
+  const base = {
+    name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
+    host: [{ required: true, message: '请输入主机 IP', trigger: 'blur' }],
+    port: [{ required: true, message: '请输入端口', trigger: 'blur' }],
+  }
+  if (!isTelnet.value) {
+    base.username = [{ required: true, message: '请输入用户名', trigger: 'blur' }]
+    if (form.auth_type === 'key') {
+      base.key_path = [{ required: true, message: '请选择或输入私钥路径', trigger: 'change' }]
+    }
+  }
+  return base
+})
+
+// 切换连接方式时,端口为另一方式的默认值则同步跟随
+watch(isTelnet, (telnet) => {
+  if (form.port === (telnet ? 22 : 23)) form.port = telnet ? 23 : 22
+})
 
 const isEdit = computed(() => !!props.host)
 const jumpOptions = computed(() =>
@@ -55,7 +71,8 @@ watch(
     if (!v) return
     form.name = props.host?.name || ''
     form.host = props.host?.host || ''
-    form.port = props.host?.port || 22
+    form.port = props.host?.port || (props.host?.conn_type === 'telnet' ? 23 : 22)
+    form.conn_type = props.host?.conn_type || 'ssh'
     form.username = props.host?.username || 'root'
     form.auth_type = props.host?.auth_type || 'password'
     form.password = ''
@@ -79,7 +96,7 @@ async function loadKeys() {
 }
 
 function payload() {
-  return { ...form, id: props.host?.id || '', port: Number(form.port) || 22 }
+  return { ...form, id: props.host?.id || '', port: Number(form.port) || (isTelnet.value ? 23 : 22) }
 }
 
 async function doSave() {
@@ -122,6 +139,12 @@ async function doTest() {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
+      <el-form-item label="连接方式">
+        <el-select v-model="form.conn_type" style="width: 160px">
+          <el-option label="SSH" value="ssh" />
+          <el-option label="Telnet" value="telnet" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="名称" prop="name">
         <el-input v-model="form.name" placeholder="例如:生产 Web 服务器" />
       </el-form-item>
@@ -131,6 +154,7 @@ async function doTest() {
       <el-form-item label="端口" prop="port">
         <el-input-number v-model="form.port" :min="1" :max="65535" controls-position="right" />
       </el-form-item>
+      <template v-if="!isTelnet">
       <el-form-item label="用户名" prop="username">
         <el-input v-model="form.username" />
       </el-form-item>
@@ -198,6 +222,7 @@ async function doTest() {
           />
         </el-select>
       </el-form-item>
+      </template>
 
       <el-form-item label="分组">
         <el-select
@@ -221,6 +246,7 @@ async function doTest() {
         </div>
       </el-form-item>
 
+      <template v-if="!isTelnet">
       <el-form-item label="启动命令">
         <el-input
           v-model="form.startup_cmd"
@@ -239,6 +265,7 @@ async function doTest() {
           勾选后注入 shell 钩子,SFTP 面板自动跟随终端 cd;该模式不显示 Last login/MOTD 横幅
         </div>
       </el-form-item>
+      </template>
     </el-form>
 
     <template #footer>

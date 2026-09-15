@@ -474,6 +474,12 @@ body {
   color: var(--text-secondary);
 }
 
+/* 安全:启动密码修改表单,定宽避免输入框拉满整行 */
+.security-form {
+  max-width: 320px;
+  margin-top: 12px;
+}
+
 /* 支持信息:灰底信息瓦片,等宽字体取值 */
 .support-grid {
   display: grid;
@@ -703,6 +709,92 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 主机名称左侧的连接方式图标 */
+.conn-item .conn-proto {
+  flex: none;
+  font-size: 16px;
+}
+
+.conn-item .conn-proto.ssh {
+  color: var(--el-color-primary, #409eff);
+}
+
+.conn-item .conn-proto.telnet {
+  color: var(--el-color-warning, #e6a23c);
+}
+
+/* ---------- 启动密码锁屏 ---------- */
+
+.lock-screen {
+  --lock-glow: rgba(64, 158, 255, 0.1);
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    radial-gradient(70rem 46rem at 50% -18%, var(--lock-glow), transparent 62%),
+    var(--bg-body);
+}
+
+html.dark .lock-screen {
+  --lock-glow: rgba(64, 158, 255, 0.17);
+}
+
+.lock-inner {
+  width: min(380px, calc(100vw - 48px));
+  text-align: center;
+}
+
+.lock-brand .lock-icon {
+  color: var(--el-color-primary, #409eff);
+}
+
+.lock-brand .lock-title {
+  margin-top: 14px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-strong);
+}
+
+.lock-brand .lock-sub {
+  margin: 8px 0 34px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.lock-screen .el-form-item {
+  margin-bottom: 18px;
+}
+
+.lock-screen .el-input__wrapper {
+  background: var(--bg-card);
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--option-border) inset;
+  padding: 4px 12px;
+}
+
+.lock-screen .el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--option-border-hover) inset;
+}
+
+.lock-screen .el-input__wrapper.is-focus {
+  box-shadow:
+    0 0 0 1px var(--el-color-primary, #409eff) inset,
+    0 6px 18px rgba(64, 158, 255, 0.12);
+}
+
+.lock-screen .lock-btn {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 8px;
+  letter-spacing: 6px;
+  font-weight: 600;
 }
 
 /* 主机分组标题行 */

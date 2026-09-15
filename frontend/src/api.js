@@ -1,5 +1,10 @@
 // 后端 API 封装:统一 JSON 请求、{error} 错误契约与 WebSocket 地址。
 
+import { reactive } from 'vue'
+
+// 启动密码锁的全局状态:任意请求收到 401 即置 locked,由 App.vue 渲染锁屏。
+export const authState = reactive({ locked: false, hasPassword: true })
+
 // opts 透传 fetch 附加选项(如 signal,用于取消连接中的会话请求)。
 async function request(method, url, body, opts = {}) {
   const reqOpts = { method, headers: {}, ...opts }
@@ -22,6 +27,9 @@ async function request(method, url, body, opts = {}) {
     /* 空响应体 */
   }
   if (!res.ok) {
+    if (res.status === 401 && url !== '/api/auth/unlock' && url !== '/api/auth/status') {
+      authState.locked = true
+    }
     throw new Error((data && data.error) || `请求失败(HTTP ${res.status})`)
   }
   return data
@@ -31,6 +39,15 @@ const get = (url) => request('GET', url)
 const post = (url, body, opts) => request('POST', url, body, opts)
 const put = (url, body, opts) => request('PUT', url, body, opts)
 const del = (url) => request('DELETE', url)
+
+// ---------- 启动密码 ----------
+
+export const authStatus = () => get('/api/auth/status')
+export const authSetup = (password) => post('/api/auth/setup', { password })
+export const authUnlock = (password) => post('/api/auth/unlock', { password })
+export const authLogout = () => post('/api/auth/logout')
+export const authChangePassword = (currentPassword, newPassword) =>
+  post('/api/auth/change', { current_password: currentPassword, new_password: newPassword })
 
 // ---------- 主机 ----------
 

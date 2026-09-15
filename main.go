@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"webssh/internal/auth"
 	"webssh/internal/config"
 	"webssh/internal/handler"
 	"webssh/internal/sshmgr"
@@ -35,6 +36,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载主机配置失败: %v", err)
 	}
+	authSt, err := auth.Open(cfg.ConfigDir)
+	if err != nil {
+		log.Fatalf("加载启动密码配置失败: %v", err)
+	}
 	mgr := sshmgr.New(cfg.ConfigDir, cfg.MaxSessions)
 	transfers := transfer.NewManager(func(sid string) (transfer.Side, string, error) {
 		s, ok := mgr.Get(sid)
@@ -51,7 +56,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
-	handler.NewAPI(cfg, st, mgr, transfers).Register(r)
+	handler.NewAPI(cfg, st, mgr, transfers, authSt).Register(r)
 
 	dist, err := fs.Sub(distFS, "frontend/dist")
 	if err != nil {

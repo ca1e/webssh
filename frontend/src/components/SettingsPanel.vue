@@ -1,17 +1,40 @@
 <script setup>
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { settings } from '../settings'
+import { authChangePassword } from '../api'
 
 defineEmits(['close'])
 
 // 左侧导航项;右侧面板按 activeMenu 渲染
 const menus = [
   { key: 'general', label: '通用' },
+  { key: 'security', label: '安全' },
   { key: 'ai', label: 'AI' },
   { key: 'about', label: '关于' },
 ]
 const activeMenu = ref('general')
+
+// ---------- 安全:修改启动密码 ----------
+const pwdForm = reactive({ current: '', next: '', repeat: '' })
+const pwdSaving = ref(false)
+
+async function submitChangePassword() {
+  if (!pwdForm.current) return ElMessage.warning('请输入当前密码')
+  if (pwdForm.next.length < 4) return ElMessage.warning('新密码至少 4 位')
+  if (pwdForm.next !== pwdForm.repeat) return ElMessage.warning('两次输入的新密码不一致')
+  if (pwdForm.next === pwdForm.current) return ElMessage.warning('新密码不能与当前密码相同')
+  pwdSaving.value = true
+  try {
+    await authChangePassword(pwdForm.current, pwdForm.next)
+    ElMessage.success('密码已修改')
+    pwdForm.current = pwdForm.next = pwdForm.repeat = ''
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    pwdSaving.value = false
+  }
+}
 
 // ---------- 通用:主题 ----------
 const themeOptions = [
@@ -107,8 +130,48 @@ async function copySupportInfo() {
             </div>
           </div>
         </div>
+        <div v-else-if="activeMenu === 'security'" class="settings-pane">
+          <div class="settings-section">
+            <div class="settings-card-title">修改启动密码</div>
+            <div class="settings-card-desc">用于解锁本工具的启动密码,修改后立即生效,当前设备保持解锁。</div>
+            <el-form label-position="top" class="security-form" @submit.prevent>
+              <el-form-item label="当前密码">
+                <el-input
+                  v-model="pwdForm.current"
+                  type="password"
+                  show-password
+                  autocomplete="current-password"
+                  placeholder="请输入当前密码"
+                />
+              </el-form-item>
+              <el-form-item label="新密码">
+                <el-input
+                  v-model="pwdForm.next"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  placeholder="至少 4 位"
+                />
+              </el-form-item>
+              <el-form-item label="重复新密码">
+                <el-input
+                  v-model="pwdForm.repeat"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  placeholder="再次输入新密码"
+                />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="pwdSaving" @click="submitChangePassword">
+                  修改密码
+                </el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+        </div>
         <div v-else-if="activeMenu === 'ai'" class="settings-pane" />
-        <div v-else class="settings-pane">
+        <div v-else-if="activeMenu === 'about'" class="settings-pane">
           <div class="settings-card">
             <div class="settings-card-head">
               <div>

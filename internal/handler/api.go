@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"webssh/internal/auth"
 	"webssh/internal/config"
 	"webssh/internal/sshmgr"
 	"webssh/internal/store"
@@ -15,14 +16,15 @@ import (
 )
 
 type API struct {
-	cfg *config.Config
-	st  *store.Store
-	mgr *sshmgr.Manager
-	tr  *transfer.Manager
+	cfg  *config.Config
+	st   *store.Store
+	mgr  *sshmgr.Manager
+	tr   *transfer.Manager
+	auth *auth.Store
 }
 
-func NewAPI(cfg *config.Config, st *store.Store, mgr *sshmgr.Manager, tr *transfer.Manager) *API {
-	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr}
+func NewAPI(cfg *config.Config, st *store.Store, mgr *sshmgr.Manager, tr *transfer.Manager, auth *auth.Store) *API {
+	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr, auth: auth}
 }
 
 func fail(c *gin.Context, code int, msg string) {
@@ -33,7 +35,19 @@ func fail(c *gin.Context, code int, msg string) {
 // hosts.go / sessions.go / terminal.go / sftp.go / transfer.go / local.go /
 // forwards.go / relay.go / docker.go / docker_ws.go / metrics.go 中。
 func (a *API) Register(r gin.IRouter) {
+	// 启动密码鉴权:先于全部路由注册;健康检查、/api/auth/* 与静态资源在
+	// 中间件内放行,其余 API(含 WS 升级)要求有效解锁 token
+	r.Use(a.requireUnlocked)
+
 	r.GET("/api/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+
+	// 启动密码(无鉴权,供锁屏使用)
+	r.GET("/api/auth/status", a.authStatus)
+	r.POST("/api/auth/setup", a.authSetup)
+	r.POST("/api/auth/unlock", a.authUnlock)
+	r.POST("/api/auth/logout", a.authLogout)
+	// 修改启动密码:路径虽在 /api/auth/ 下,但 handler 内显式要求已解锁
+	r.POST("/api/auth/change", a.authChangePassword)
 
 	// 主机管理
 	r.GET("/api/hosts", a.listHosts)
