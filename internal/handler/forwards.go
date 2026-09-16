@@ -18,10 +18,14 @@ func (a *API) listForwards(c *gin.Context) {
 }
 
 type forwardReq struct {
-	Type       string `json:"type"` // local | socks5
+	Type       string `json:"type"` // local | socks5 | k8s
 	ListenPort int    `json:"listen_port"`
 	RemoteHost string `json:"remote_host"`
 	RemotePort int    `json:"remote_port"`
+	// type=k8s:命名空间、kind/name 目标与服务端口(数字或端口名)
+	Namespace string `json:"namespace"`
+	K8sTarget string `json:"k8s_target"`
+	K8sPort   string `json:"k8s_port"`
 }
 
 func (a *API) addForward(c *gin.Context) {
@@ -35,7 +39,9 @@ func (a *API) addForward(c *gin.Context) {
 		fail(c, 400, "参数错误: "+err.Error())
 		return
 	}
-	f, err := s.AddForward(req.Type, strings.TrimSpace(req.RemoteHost), req.ListenPort, req.RemotePort)
+	f, err := s.AddForward(req.Type, strings.TrimSpace(req.RemoteHost),
+		strings.TrimSpace(req.Namespace), strings.TrimSpace(req.K8sTarget),
+		strings.TrimSpace(req.K8sPort), req.ListenPort, req.RemotePort)
 	if err != nil {
 		fail(c, 400, err.Error())
 		return

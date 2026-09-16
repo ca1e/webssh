@@ -117,6 +117,8 @@ export const dockerInspect = (sid, cid) => get(`/api/sessions/${sid}/docker/insp
 export const listForwards = (sid) => get(`/api/sessions/${sid}/forwards`)
 export const addForward = (sid, payload) => post(`/api/sessions/${sid}/forwards`, payload)
 export const deleteForward = (sid, fid) => del(`/api/sessions/${sid}/forwards/${fid}`)
+export const k8sResources = (sid, namespace) =>
+  get(`/api/sessions/${sid}/k8s/resources${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ''}`)
 
 // ---------- 工具 ----------
 

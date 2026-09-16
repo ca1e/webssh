@@ -77,10 +77,11 @@ func (a *API) Register(r gin.IRouter) {
 	r.POST("/api/local/mkdir", a.localMkdir)
 	r.POST("/api/local/rename", a.localRename)
 
-	// 端口转发 / SOCKS5
+	// 端口转发 / SOCKS5 / K8s 服务转发
 	r.GET("/api/sessions/:id/forwards", a.listForwards)
 	r.POST("/api/sessions/:id/forwards", a.addForward)
 	r.DELETE("/api/sessions/:id/forwards/:fid", a.delForward)
+	r.GET("/api/sessions/:id/k8s/resources", a.k8sResources)
 
 	// 统一文件传输(本机↔远程、远程↔远程,异步任务 + WS 进度推送)
 	r.POST("/api/transfers", a.createTransfer)

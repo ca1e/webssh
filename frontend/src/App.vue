@@ -13,6 +13,7 @@ import DockerPanel from './components/DockerPanel.vue'
 import ContainerLogsPanel from './components/ContainerLogsPanel.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import LockScreen from './components/LockScreen.vue'
+import OverviewPanel from './components/OverviewPanel.vue'
 import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, openSession } from './api'
 import { isDark, settings } from './settings'
 
@@ -586,9 +587,7 @@ async function duplicate(host) {
       </div>
 
       <div class="session-area">
-        <div v-if="!sessions.length && !containerTabs.length" class="empty-hint" style="margin-top: 120px">
-          暂无连接,点击左侧主机的「连接」开始(可右键主机进行更多操作)
-        </div>
+        <OverviewPanel v-if="!sessions.length && !containerTabs.length" :hosts="hosts" @create="openCreate" />
         <el-tabs
           v-else
           v-model="activeId"
