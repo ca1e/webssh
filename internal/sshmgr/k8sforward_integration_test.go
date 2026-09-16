@@ -19,8 +19,9 @@ func TestIntegrationAddK8sForwardPreflight(t *testing.T) {
 		t.Fatalf("非法 namespace 应报校验错误,实际: %v", err)
 	}
 
-	// 合法格式但不存在的资源:预检应以 kubectl 相关错误拒绝
-	_, err := s.AddForward("k8s", "", "default", "svc/webssh-definitely-not-here", "80", 18081, 0)
+	// 合法格式但不存在的资源:预检应以 kubectl 相关错误拒绝。
+	// listen_port 传 0 同时覆盖"k8s 允许自动分配端口"的参数路径。
+	_, err := s.AddForward("k8s", "", "default", "svc/webssh-definitely-not-here", "80", 0, 0)
 	if err == nil {
 		t.Fatal("预检不应通过(本机无该服务)")
 	}

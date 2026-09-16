@@ -142,8 +142,12 @@ out=$("$KUBECTL" get -n %s %s -o name 2>&1) || printf '%s%%s\n' "$out"`,
 	return nil
 }
 
-// k8sTunnel 为一条本地连接打开远端 port-forward 桥并双向搬运。
+// k8sTunnel 为一条本地连接打开远端 port-forward 桥并双向搬运,
+// 同时累计连接与流量统计(OpenLens 式面板数据)。
 func (f *Forward) k8sTunnel(conn io.ReadWriteCloser) {
+	f.totalN.Add(1)
+	f.activeN.Add(1)
+	defer f.activeN.Add(-1)
 	sess, err := f.sess.client.NewSession()
 	if err != nil {
 		f.setLastError("创建 SSH 通道失败: " + err.Error())
@@ -181,25 +185,53 @@ func (f *Forward) k8sTunnel(conn io.ReadWriteCloser) {
 			}
 		}
 	}()
-	proxyBytes(conn, struct {
-		io.Reader
-		io.WriteCloser
-	}{stdout, stdin})
+	pumpCounted(conn, stdin, stdout, f)
 	if msg := errBuf.String(); msg != "" {
 		f.setLastError(msg)
 	}
 }
 
-// proxyBytes 是 proxy 的通用版本:两端不必同为 net.Conn(SSH 通道的
-// 读/写端拆分在两个对象上)。任一方向结束即关闭两侧。
-func proxyBytes(a io.ReadWriteCloser, b interface {
-	io.Reader
-	io.WriteCloser
-}) {
+// pumpCounted 在本地连接与远端通道间双向搬运并计数:
+// conn→stdin 记 Sent(上行),stdout→conn 记 Recv(下行)。
+// 任一方向结束即关闭两侧,语义与 proxy 一致。
+func pumpCounted(conn io.ReadWriteCloser, stdin io.WriteCloser, stdout io.Reader, f *Forward) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); io.Copy(b, a); b.Close(); a.Close() }()
-	go func() { defer wg.Done(); io.Copy(a, b); b.Close(); a.Close() }()
+	go func() {
+		defer wg.Done()
+		b := make([]byte, 32*1024)
+		for {
+			n, err := conn.Read(b)
+			if n > 0 {
+				f.sentN.Add(int64(n))
+				if _, werr := stdin.Write(b[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		stdin.Close()
+		conn.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		b := make([]byte, 32*1024)
+		for {
+			n, err := stdout.Read(b)
+			if n > 0 {
+				f.recvN.Add(int64(n))
+				if _, werr := conn.Write(b[:n]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		conn.Close()
+	}()
 	wg.Wait()
 }
 

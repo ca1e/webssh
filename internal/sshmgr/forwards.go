@@ -6,7 +6,17 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
+
+// ForwardStats 一条转发的连接与流量统计(k8s 类型填充,其余类型为零)。
+// 方向以本机使用者视角记:Sent=本机→服务(上行),Recv=服务→本机(下行)。
+type ForwardStats struct {
+	Active int64 `json:"active"`
+	Total  int64 `json:"total"`
+	Recv   int64 `json:"recv_bytes"`
+	Sent   int64 `json:"sent_bytes"`
+}
 
 // Forward 一条活动转发规则,仅监听 127.0.0.1。
 type Forward struct {
@@ -20,11 +30,19 @@ type Forward struct {
 	K8sTarget string `json:"k8s_target,omitempty"`
 	K8sPort   string `json:"k8s_port,omitempty"`
 	// LastError 最近一次桥接失败的远端诊断(列表快照时填充)。
-	LastError string `json:"last_error,omitempty"`
+	LastError string       `json:"last_error,omitempty"`
+	Stats     ForwardStats `json:"stats"`
 
 	sess     *Session
 	ln       net.Listener
 	stopOnce sync.Once
+
+	// 原子计数:当前活跃/累计连接与双向流量;atomic 字段不拷出,
+	// ListForwards 快照时汇总进 Stats。
+	activeN atomic.Int64
+	totalN  atomic.Int64
+	recvN   atomic.Int64
+	sentN   atomic.Int64
 
 	// lastErr 最近一次桥接失败的远端诊断(stderr),供面板展示。
 	lastErrMu sync.Mutex
@@ -54,6 +72,18 @@ func validPort(p int) error {
 	return nil
 }
 
+// resolveListenPort 校验监听端口:k8s 类型允许 0(内核自动分配,对齐
+// OpenLens 的端口自动分配交互),其余类型必须显式指定合法端口。
+func resolveListenPort(typ string, listenPort int) error {
+	if listenPort == 0 {
+		if typ != "k8s" {
+			return fmt.Errorf("监听端口不能为空")
+		}
+		return nil
+	}
+	return validPort(listenPort)
+}
+
 func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort string, listenPort, remotePort int) (*Forward, error) {
 	if s.isTelnet() {
 		return nil, ErrSSHOnly
@@ -61,7 +91,7 @@ func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort stri
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
-	if err := validPort(listenPort); err != nil {
+	if err := resolveListenPort(typ, listenPort); err != nil {
 		return nil, err
 	}
 	f := &Forward{
@@ -101,6 +131,12 @@ func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort stri
 		return nil, fmt.Errorf("监听 %s 失败: %w", f.listenAddr(), err)
 	}
 	f.ln = ln
+	// listen_port=0 自动分配:回填内核实际选中的端口,返回给前端展示。
+	if f.ListenPort == 0 {
+		if ta, ok := ln.Addr().(*net.TCPAddr); ok {
+			f.ListenPort = ta.Port
+		}
+	}
 
 	s.mu.Lock()
 	s.fidSeq++
@@ -135,6 +171,10 @@ func (s *Session) ListForwards() []Forward {
 			RemoteHost: f.RemoteHost, RemotePort: f.RemotePort,
 			Namespace: f.Namespace, K8sTarget: f.K8sTarget, K8sPort: f.K8sPort,
 			LastError: f.lastError(),
+			Stats: ForwardStats{
+				Active: f.activeN.Load(), Total: f.totalN.Load(),
+				Recv: f.recvN.Load(), Sent: f.sentN.Load(),
+			},
 		})
 	}
 	return out

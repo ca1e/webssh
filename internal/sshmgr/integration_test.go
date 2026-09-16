@@ -123,7 +123,7 @@ func openPlainSession(t *testing.T, mgr *Manager) *Session {
 func TestIntegrationTerminalPlainDefault(t *testing.T) {
 	// 默认(未勾选 FollowSSHPath)= 普通连接:终端无任何注入,
 	// 即使执行 cd 也不产生 OSC 7,更无钩子行回显
-	s := openPlainSession(t, New(t.TempDir(), 8))
+	s := openPlainSession(t, New(t.TempDir(), 8, 0))
 	term, err := s.NewTerminal(80, 24, "")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -156,7 +156,7 @@ func TestIntegrationTerminalPlainDefault(t *testing.T) {
 }
 
 func TestIntegrationRunExec(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8))
+	s := openTestSession(t, New(t.TempDir(), 8, 0))
 	out, err := s.Run("echo hello-webssh")
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
@@ -167,7 +167,7 @@ func TestIntegrationRunExec(t *testing.T) {
 }
 
 func TestIntegrationTerminalCwdTracking(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8))
+	s := openTestSession(t, New(t.TempDir(), 8, 0))
 	term, err := s.NewTerminal(80, 24, "")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -196,7 +196,7 @@ func TestIntegrationTerminalCwdTracking(t *testing.T) {
 }
 
 func TestIntegrationTerminalStartupCmd(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8))
+	s := openTestSession(t, New(t.TempDir(), 8, 0))
 	term, err := s.NewTerminal(80, 24, "echo STARTUP_MARKER_$((40+2))")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -223,7 +223,7 @@ func TestIntegrationTerminalStartupCmd(t *testing.T) {
 }
 
 func TestIntegrationSftpRoundtrip(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8))
+	s := openTestSession(t, New(t.TempDir(), 8, 0))
 	sc, err := s.SFTP()
 	if err != nil {
 		t.Fatalf("SFTP 不可用: %v", err)
@@ -262,7 +262,7 @@ func TestIntegrationSftpRoundtrip(t *testing.T) {
 }
 
 func TestIntegrationSessionLimit(t *testing.T) {
-	mgr := New(t.TempDir(), 1)
+	mgr := New(t.TempDir(), 1, 0)
 	s := openTestSession(t, mgr) // 占满唯一额度
 	_ = s
 	_, err := mgr.OpenSession(context.Background(), store.Host{

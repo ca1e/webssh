@@ -10,7 +10,7 @@ import (
 	"webssh/internal/sshmgr"
 )
 
-// ---------- K8s 资源浏览(仅服务于转发面板的输入建议) ----------
+// ---------- K8s 资源浏览(服务于转发面板的 OpenLens 式端口列表) ----------
 
 // k8sRunnerPrelude 定义 wsrun:优先在登录 shell(bash -lc)中执行 kubectl
 // 命令——sshd exec 通道是非交互非登录 shell,PATH/KUBECONFIG 常只在 profile
@@ -38,13 +38,40 @@ emit() {
 
 var k8sSectionRe = regexp.MustCompile(`(?s)__WS_(\w+)_(OK|ERR)__\n(.*?)\n?__WS_END__`)
 
-type k8sItem struct {
+type k8sPort struct {
+	Port string `json:"port"` // 数字或端口名,原样透传给 port-forward
 	Name string `json:"name"`
-	Desc string `json:"desc"` // service: 端口列表;pods: 运行状态;ns: 空
+}
+
+type k8sTarget struct {
+	Name   string    `json:"name"`
+	Status string    `json:"status,omitempty"` // pods: phase
+	Ports  []k8sPort `json:"ports"`
+}
+
+// kubectl 输出模板:每行 kind<TAB>name<TAB>[status<TAB>]端口列表,
+// 端口为 port:name,分号分隔。`\t`/`\n` 必须写作 {"\t"}/{"\n"}(jsonpath
+// 动作内的 Go 字符串转义,裸 \t 会被原样输出);模板只用双引号,
+// 经 shq 包裹后仍安全。
+func k8sSvcCmd(ns string) string {
+	return `kubectl get svc -n ` + ns +
+		` -o jsonpath='{range .items[*]}svc{"\t"}{.metadata.name}{"\t"}{range .spec.ports[*]}{.port}:{.name};{end}{"\n"}{end}'`
+}
+
+func k8sPodCmd(ns string) string {
+	return `kubectl get pods -n ` + ns +
+		` -o jsonpath='{range .items[*]}po{"\t"}{.metadata.name}{"\t"}{.status.phase}{"\t"}{range .spec.containers[*]}{range .ports[*]}{.containerPort}:{.name};{end}{end}{"\n"}{end}'`
+}
+
+const k8sNsCmd = `kubectl get ns --no-headers`
+
+// shq 单引号安全包裹(仅含 [a-z0-9.-] 的 ns 实际无需转义,统一处理)。
+func shq(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // k8sResources GET /api/sessions/:id/k8s/resources?namespace=xx
-// namespace 为空时列命名空间;否则列该命名空间下的 svc 与 pods。
+// namespace 为空时列命名空间;否则列该命名空间下的 svc 与 pods(含端口)。
 // available=false 表示远端找不到 kubectl;error 携带失败原因(可展示)。
 func (a *API) k8sResources(c *gin.Context) {
 	s, ok := a.mgr.Get(c.Param("id"))
@@ -58,27 +85,15 @@ func (a *API) k8sResources(c *gin.Context) {
 		return
 	}
 
-	var sections []string
-	if ns == "" {
-		sections = []string{"NS"}
-	} else {
-		sections = []string{"SVC", "POD"}
-	}
+	// 组装单次 exec 的多段查询命令(ns 已过白名单校验,直接内联安全)。
 	var sb strings.Builder
 	sb.WriteString(k8sRunnerPrelude)
 	sb.WriteString("\n")
-	for _, sec := range sections {
-		var cmd string
-		switch sec {
-		case "NS":
-			cmd = "kubectl get ns --no-headers"
-		case "SVC":
-			// ns 已过 ValidK8sName 白名单,无需再引号包裹
-			cmd = fmt.Sprintf("kubectl get svc -n %s --no-headers", ns)
-		case "POD":
-			cmd = fmt.Sprintf("kubectl get pods -n %s --no-headers", ns)
-		}
-		sb.WriteString(fmt.Sprintf("wsrun '%s'; emit %s $?\n", cmd, sec))
+	if ns == "" {
+		sb.WriteString(fmt.Sprintf("wsrun %s; emit NS $?\n", shq(k8sNsCmd)))
+	} else {
+		sb.WriteString(fmt.Sprintf("wsrun %s; emit SVC $?\n", shq(k8sSvcCmd(ns))))
+		sb.WriteString(fmt.Sprintf("wsrun %s; emit POD $?\n", shq(k8sPodCmd(ns))))
 	}
 
 	out, err := s.Run(sb.String())
@@ -87,7 +102,7 @@ func (a *API) k8sResources(c *gin.Context) {
 		return
 	}
 
-	resp := gin.H{"available": true, "namespaces": []k8sItem{}, "services": []k8sItem{}, "pods": []k8sItem{}}
+	resp := gin.H{"available": true, "namespaces": []string{}, "services": []k8sTarget{}, "pods": []k8sTarget{}}
 	var errs []string
 	for _, m := range k8sSectionRe.FindAllStringSubmatch(out, -1) {
 		sec, status, body := m[1], m[2], strings.TrimSpace(m[3])
@@ -98,9 +113,14 @@ func (a *API) k8sResources(c *gin.Context) {
 			errs = append(errs, fmt.Sprintf("%s: %s", sec, firstLine(body)))
 			continue
 		}
-		items := parseK8sTable(sec, body)
-		key := map[string]string{"NS": "namespaces", "SVC": "services", "POD": "pods"}[sec]
-		resp[key] = items
+		switch sec {
+		case "NS":
+			resp["namespaces"] = parseK8sNS(body)
+		case "SVC":
+			resp["services"] = parseK8sTargets("svc", body)
+		case "POD":
+			resp["pods"] = parseK8sTargets("po", body)
+		}
 	}
 	if len(errs) > 0 {
 		resp["error"] = strings.Join(errs, "; ")
@@ -108,32 +128,58 @@ func (a *API) k8sResources(c *gin.Context) {
 	c.JSON(200, resp)
 }
 
-// parseK8sTable 解析 `kubectl get ... --no-headers` 表格输出:
-// 首列为名称;service 第 5 列是端口(PORTS),pods 第 3 列是状态(STATUS)。
-func parseK8sTable(sec, body string) []k8sItem {
-	var items []k8sItem
+// parseK8sNS 解析命名空间列表(`kubectl get ns --no-headers` 表格,取首列)。
+func parseK8sNS(body string) []string {
+	var list []string
 	for _, line := range strings.Split(body, "\n") {
 		f := strings.Fields(line)
-		if len(f) == 0 {
+		if len(f) > 0 && f[0] != "NAME" {
+			list = append(list, f[0])
+		}
+	}
+	if list == nil {
+		list = []string{}
+	}
+	return list
+}
+
+// parseK8sTargets 解析 jsonpath 的 TSV 行:kind<TAB>name<TAB>[status<TAB>]ports;
+// ports 为 port:name 的分号序列(无名端口 name 为空)。
+func parseK8sTargets(kind, body string) []k8sTarget {
+	var out []k8sTarget
+	for _, line := range strings.Split(body, "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) < 3 || f[0] != kind || f[1] == "" {
 			continue
 		}
-		it := k8sItem{Name: f[0]}
-		switch sec {
-		case "SVC":
-			if len(f) >= 5 {
-				it.Desc = f[4]
+		var portStr string
+		t := k8sTarget{Name: f[1]}
+		if kind == "po" {
+			if len(f) > 3 {
+				t.Status = f[2]
+				portStr = f[3]
 			}
-		case "POD":
-			if len(f) >= 3 {
-				it.Desc = f[2]
+		} else {
+			portStr = f[2]
+		}
+		for _, ps := range strings.Split(portStr, ";") {
+			if ps == "" {
+				continue
+			}
+			port, name, _ := strings.Cut(ps, ":")
+			if port != "" {
+				t.Ports = append(t.Ports, k8sPort{Port: port, Name: name})
 			}
 		}
-		items = append(items, it)
+		if t.Ports == nil {
+			t.Ports = []k8sPort{}
+		}
+		out = append(out, t)
 	}
-	if items == nil {
-		items = []k8sItem{}
+	if out == nil {
+		out = []k8sTarget{}
 	}
-	return items
+	return out
 }
 
 func firstLine(s string) string {
