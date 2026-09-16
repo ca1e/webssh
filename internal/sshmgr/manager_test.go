@@ -73,7 +73,7 @@ func TestExpandHome(t *testing.T) {
 
 func TestManagerSessionLimit(t *testing.T) {
 	// 上限检查发生在拨号前:无需真实连接即可验证拒绝逻辑
-	m := New(t.TempDir(), 0)
+	m := New(t.TempDir(), 0, 0) // grace=0:孤儿回收在测试内不生效
 	m.mu.Lock()
 	m.sessions["fake-1"] = &Session{ID: "fake-1"}
 	m.sessions["fake-2"] = &Session{ID: "fake-2"}

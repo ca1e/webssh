@@ -26,6 +26,13 @@ func (a *API) terminalWS(c *gin.Context) {
 		fail(c, 404, "会话不存在")
 		return
 	}
+	// 终端附着即会话存活的凭据:断开后进入孤儿宽限期,超期自动回收
+	// (terminal.go 的 readLoop 出错返回同样触发,覆盖刷新与关浏览器)
+	if err := s.AttachTerminal(); err != nil {
+		fail(c, 404, err.Error())
+		return
+	}
+	defer s.DetachTerminal()
 	cols := atoiDefault(c.Query("cols"), 80)
 	rows := atoiDefault(c.Query("rows"), 24)
 	term, err := s.NewTerminal(cols, rows, s.StartupCmd)

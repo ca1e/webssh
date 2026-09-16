@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -31,14 +32,20 @@ type Manager struct {
 	known     map[string]string // "host:port" -> SHA256 指纹
 
 	maxSessions int // 活动会话上限,0 表示不限制
+
+	// orphanGrace 最后一个终端断开后到自动回收之间的宽限期。覆盖页面刷新
+	// (WS 强断→重连)与瞬时断网;关浏览器后 sessionStorage 随标签页销毁,
+	// 孤儿会话无人再接管,宽限期一到即回收,不再永久占用连接与 maxSessions 名额。
+	orphanGrace time.Duration
 }
 
-func New(configDir string, maxSessions int) *Manager {
+func New(configDir string, maxSessions int, orphanGrace time.Duration) *Manager {
 	m := &Manager{
 		sessions:    map[string]*Session{},
 		knownPath:   filepath.Join(configDir, "known_hosts.json"),
 		known:       map[string]string{},
 		maxSessions: maxSessions,
+		orphanGrace: orphanGrace,
 	}
 	if data, err := os.ReadFile(m.knownPath); err == nil {
 		_ = json.Unmarshal(data, &m.known)
@@ -332,6 +339,7 @@ func (m *Manager) OpenSession(ctx context.Context, h store.Host, jump *store.Hos
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
+	s.armOrphan()
 	return s, nil
 }
 
@@ -354,6 +362,7 @@ func (m *Manager) openTelnetSession(ctx context.Context, h store.Host) (*Session
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
+	s.armOrphan()
 	return s, nil
 }
 
@@ -379,6 +388,12 @@ type Session struct {
 	conn       net.Conn    // telnet 会话的底层连接(ssh 会话为 nil)
 	connType   string
 	targetAddr string
+
+	// 终端附着引用计数与孤儿回收计时器(s.mu 保护)。会话的存活性自此等价于
+	// "至少一个终端 WS 附着,或断开后仍处于宽限期内";前端关浏览器/关闭标签页
+	// 之外的路径(崩溃、刷新间隙)都收敛为:宽限期到 → 自动回收。
+	termRefs    int
+	orphanTimer *time.Timer
 
 	sftpOnce   sync.Once
 	sftpClient *sftp.Client
@@ -426,6 +441,63 @@ func (s *Session) ConnType() string { return s.connType }
 
 func (s *Session) isTelnet() bool { return s.connType == store.ConnTelnet }
 
+// AttachTerminal 登记一个终端通道附着(解除待命的孤儿回收);会话已关闭时报错。
+func (s *Session) AttachTerminal() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("会话已断开")
+	}
+	if s.orphanTimer != nil {
+		s.orphanTimer.Stop()
+		s.orphanTimer = nil
+	}
+	s.termRefs++
+	return nil
+}
+
+// DetachTerminal 注销一个终端通道;引用归零时启动宽限期孤儿回收计时。
+// 与 AttachTerminal 成对(defer),宽限期内任意新终端接上即取消。
+func (s *Session) DetachTerminal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.termRefs <= 0 {
+		return
+	}
+	s.termRefs--
+	if s.termRefs == 0 {
+		s.armOrphanLocked()
+	}
+}
+
+// armOrphan 在无终端附着时布防孤儿回收计时,用于新建会话:拨号成功但前端
+// 死在首个终端建立前(如浏览器请求发出即被关闭)也能被宽限期回收。
+func (s *Session) armOrphan() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armOrphanLocked()
+}
+
+func (s *Session) armOrphanLocked() {
+	// orphanGrace <= 0 关闭该机制(手工构造的 Manager/测试默认不复活的哨兵值)
+	if s.mgr == nil || s.closed || s.termRefs > 0 || s.mgr.orphanGrace <= 0 {
+		return
+	}
+	s.orphanTimer = time.AfterFunc(s.mgr.orphanGrace, s.reapIfOrphan)
+}
+
+func (s *Session) reapIfOrphan() {
+	s.mu.Lock()
+	if s.closed || s.termRefs > 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.orphanTimer = nil
+	s.mu.Unlock()
+	log.Printf("会话 %s(%s@%s)%v 内无终端连接,自动回收", s.ID, s.Username(), s.Addr(), s.mgr.orphanGrace)
+	s.Close()
+}
+
 func (s *Session) checkOpen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -461,6 +533,10 @@ func (s *Session) Close() {
 		return
 	}
 	s.closed = true
+	if s.orphanTimer != nil {
+		s.orphanTimer.Stop()
+		s.orphanTimer = nil
+	}
 	for _, f := range s.forwards {
 		f.stop()
 	}

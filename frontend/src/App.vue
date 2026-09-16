@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, ArrowRight, Box, CircleCloseFilled, DArrowRight, FolderOpened, Loading, Monitor, Moon, Plus, Promotion, Setting, Sunny } from '@element-plus/icons-vue'
 import ConnectionList from './components/ConnectionList.vue'
@@ -14,7 +14,7 @@ import ContainerLogsPanel from './components/ContainerLogsPanel.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import LockScreen from './components/LockScreen.vue'
 import OverviewPanel from './components/OverviewPanel.vue'
-import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, openSession } from './api'
+import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, listSessions, openSession } from './api'
 import { isDark, settings } from './settings'
 
 const hosts = ref([])
@@ -171,6 +171,150 @@ function closeContainerTab(id) {
   if (activeId.value === id) {
     activeId.value = allIds.length ? allIds[Math.min(idx, allIds.length - 1)] : ''
   }
+}
+
+// ---------- 刷新恢复:Tab 布局持久化(sessionStorage,按浏览器标签页隔离) ----------
+// F5 后 Vue 内存清空,但后端 Session 由 keepalive 独立存活;恢复 = 读本标签页的
+// 布局记录,与 GET /api/sessions 的活会话求交集重建 Tab。旧 PTY 已随 WS 断开被
+// 远端回收,恢复后的终端是新 shell(与手动点"重新连接"语义一致)。
+const TABS_KEY = 'webssh.tabs'
+let restoring = false
+let restoredOnce = false
+
+// 终端树与叶子 key 无关的纯形状(leafSeq 每次加载重新分配,聚焦位置存索引路径)
+function treeShape(node) {
+  return node.type === 'leaf' ? { t: 'l' } : { t: 's', d: node.dir, c: [treeShape(node.children[0]), treeShape(node.children[1])] }
+}
+
+function rebuildTree(shape) {
+  if (shape.t === 'l') return makeLeaf()
+  return { type: 'split', dir: shape.d, children: [rebuildTree(shape.c[0]), rebuildTree(shape.c[1])] }
+}
+
+function leafPath(node, key, path = []) {
+  if (node.type === 'leaf') return node.key === key ? path : null
+  for (let i = 0; i < 2; i++) {
+    const p = leafPath(node.children[i], key, [...path, i])
+    if (p) return p
+  }
+  return null
+}
+
+function keyAtLeafPath(node, path) {
+  let n = node
+  for (const i of path) {
+    if (!n || n.type !== 'split') return null
+    n = n.children[i]
+  }
+  return n && n.type === 'leaf' ? n.key : null
+}
+
+function collectTabsRecord() {
+  return {
+    v: 1,
+    sessions: sessions.value
+      .filter((s) => s.status === 'open')
+      .map((s) => ({
+        id: s.id,
+        hostId: s.hostId,
+        name: s.name,
+        host: s.host,
+        username: s.username,
+        connType: s.connType,
+        jumpName: s.jumpName,
+        sftpOpen: s.sftpOpen,
+        fwdOpen: s.fwdOpen,
+        hostOpen: s.hostOpen,
+        dockerOpen: s.dockerOpen,
+        panelPct: s.panelPct,
+        shape: treeShape(s.tree),
+        focus: leafPath(s.tree, s.focused) || [],
+      })),
+    containerTabs: containerTabs.value.map((t) => ({ ...t })),
+    activeId: activeId.value,
+    hostSeq: { ...hostSeq },
+  }
+}
+
+let persistTimer = null
+function schedulePersist() {
+  if (restoring) return
+  clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    try {
+      sessionStorage.setItem(TABS_KEY, JSON.stringify(collectTabsRecord()))
+    } catch {
+      /* 隐私模式/配额受限:放弃持久化,不影响正常使用 */
+    }
+  }, 300)
+}
+watch([sessions, containerTabs, activeId], schedulePersist, { deep: true })
+
+async function restoreTabs() {
+  if (restoredOnce || restoring) return
+  let rec
+  try {
+    rec = JSON.parse(sessionStorage.getItem(TABS_KEY) || 'null')
+  } catch {
+    rec = null
+  }
+  if (!rec || !Array.isArray(rec.sessions) || !rec.sessions.length) {
+    restoredOnce = true
+    return
+  }
+  restoring = true
+  try {
+    const live = new Map((await listSessions()).map((x) => [x.id, x]))
+    for (const r of rec.sessions) {
+      const lv = live.get(r.id)
+      let tree
+      try {
+        tree = rebuildTree(r.shape)
+      } catch {
+        tree = makeLeaf()
+      }
+      // 后端已无此会话(keepalive 检出断链/服务重启):保留 tab 置为 failed,
+      // 凭记录中的 hostId 走既有"重试"流程重连
+      sessions.value.push(
+        reactive({
+          id: r.id,
+          hostId: r.hostId,
+          status: lv ? 'open' : 'failed',
+          errMsg: lv ? '' : '会话已失效(服务端连接断开或已重启),点击重试重新连接',
+          name: r.name,
+          host: (lv && lv.host) || r.host,
+          username: (lv && lv.username) || r.username,
+          connType: (lv && lv.conn_type) || r.connType,
+          jumpName: lv ? lv.jump_name || '' : r.jumpName || '',
+          flash: false,
+          sftpOpen: !!r.sftpOpen,
+          fwdOpen: !!r.fwdOpen,
+          hostOpen: !!r.hostOpen,
+          dockerOpen: !!r.dockerOpen,
+          panelPct: r.panelPct || 35,
+          tree,
+          focused: keyAtLeafPath(tree, r.focus || []) || firstLeafKey(tree),
+          elapsed: 0,
+        }),
+      )
+    }
+    Object.assign(hostSeq, rec.hostSeq || {})
+    const openIds = new Set(sessions.value.filter((s) => s.status === 'open').map((s) => s.id))
+    for (const t of Array.isArray(rec.containerTabs) ? rec.containerTabs : []) {
+      if (!openIds.has(t.parentSid)) continue
+      containerTabs.value.push(t)
+      const n = Number(String(t.id).replace('ctab-', ''))
+      if (n > containerSeq) containerSeq = n
+    }
+    const allIds = [...sessions.value.map((s) => s.id), ...containerTabs.value.map((t) => t.id)]
+    activeId.value = allIds.includes(rec.activeId) ? rec.activeId : allIds[0] || ''
+  } catch {
+    return // listSessions 失败(锁屏竞态/网络):本次不恢复,保留记录等解锁后重试
+  } finally {
+    restoring = false
+  }
+  restoredOnce = true
+  schedulePersist() // 立即回写,清理已失效的会话 id
 }
 
 function onTabRemove(id) {
@@ -339,13 +483,17 @@ async function checkLock() {
 
 onMounted(async () => {
   await checkLock()
-  if (!authState.locked) loadHosts()
+  if (!authState.locked) {
+    await loadHosts()
+    restoreTabs()
+  }
   window.addEventListener('click', onGlobalClick)
   window.addEventListener('blur', onGlobalClick)
 })
 
 function onUnlocked() {
   loadHosts()
+  restoreTabs()
 }
 
 onBeforeUnmount(() => {

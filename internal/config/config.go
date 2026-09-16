@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -15,6 +16,9 @@ type Config struct {
 	KeysDir string
 	// MaxSessions 同时活动会话数量上限
 	MaxSessions int
+	// OrphanGrace 会话最后一个终端断开后的存活宽限期(覆盖页面刷新/瞬时断网
+	// 的重连窗口);归零超时后自动回收孤儿会话
+	OrphanGrace time.Duration
 }
 
 func envOr(key, def string) string {
@@ -28,6 +32,15 @@ func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
+		}
+	}
+	return def
+}
+
+func envDur(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
 		}
 	}
 	return def
@@ -49,5 +62,6 @@ func Load() *Config {
 		ConfigDir:   filepath.Join(xdg, "webssh"),
 		KeysDir:     envOr("WEBSSH_SSH_KEYS_DIR", filepath.Join(home, ".ssh")),
 		MaxSessions: envInt("WEBSSH_MAX_SESSIONS", 64),
+		OrphanGrace: envDur("WEBSSH_ORPHAN_GRACE", 5*time.Minute),
 	}
 }

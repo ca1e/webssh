@@ -11,7 +11,7 @@ import (
 // 无 kubectl 环境(testssh 在本机运行,通常没有集群)下会明确报错,
 // 而不是"监听成功但不可用"的假成功。
 func TestIntegrationAddK8sForwardPreflight(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8))
+	s := openTestSession(t, New(t.TempDir(), 8, 0)) // grace=0:测试内关闭孤儿回收
 
 	// 参数校验先行:非法 namespace 不发起任何远端探测
 	if _, err := s.AddForward("k8s", "", "BAD NS", "svc/x", "80", 18080, 0); err == nil ||

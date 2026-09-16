@@ -40,7 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载启动密码配置失败: %v", err)
 	}
-	mgr := sshmgr.New(cfg.ConfigDir, cfg.MaxSessions)
+	mgr := sshmgr.New(cfg.ConfigDir, cfg.MaxSessions, cfg.OrphanGrace)
 	transfers := transfer.NewManager(func(sid string) (transfer.Side, string, error) {
 		s, ok := mgr.Get(sid)
 		if !ok {
