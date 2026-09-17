@@ -27,6 +27,14 @@ const (
 	telSE   = 240
 )
 
+// dialTelnetConn 经 Manager 拨号 telnet 连接(支持测试注入)。
+func (m *Manager) dialTelnetConn(ctx context.Context, h store.Host) (*telnetConn, string, error) {
+	if m.dialTelnetFn != nil {
+		return m.dialTelnetFn(ctx, h)
+	}
+	return dialTelnet(ctx, h)
+}
+
 // telnetAddr 返回 telnet 主机地址,默认端口 23。
 func telnetAddr(h store.Host) (string, int) {
 	port := h.Port
@@ -37,7 +45,7 @@ func telnetAddr(h store.Host) (string, int) {
 }
 
 // dialTelnet 建立 telnet 连接:纯 TCP 拨号,链路保活交由内核 keepalive。
-func dialTelnet(ctx context.Context, h store.Host) (net.Conn, string, error) {
+func dialTelnet(ctx context.Context, h store.Host) (*telnetConn, string, error) {
 	addr, _ := telnetAddr(h)
 	d := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	nc, err := d.DialContext(ctx, "tcp", addr)
@@ -167,17 +175,73 @@ func (c *telnetConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (c *telnetConn) Close() error                   { return c.conn.Close() }
-func (c *telnetConn) LocalAddr() net.Addr            { return c.conn.LocalAddr() }
-func (c *telnetConn) RemoteAddr() net.Addr           { return c.conn.RemoteAddr() }
-func (c *telnetConn) SetDeadline(t time.Time) error  { return c.conn.SetDeadline(t) }
+func (c *telnetConn) Close() error                       { return c.conn.Close() }
+func (c *telnetConn) LocalAddr() net.Addr                { return c.conn.LocalAddr() }
+func (c *telnetConn) RemoteAddr() net.Addr               { return c.conn.RemoteAddr() }
+func (c *telnetConn) SetDeadline(t time.Time) error      { return c.conn.SetDeadline(t) }
 func (c *telnetConn) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
 func (c *telnetConn) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }
 
-// newTelnetTerminal 把已建立的 telnet 连接包装为交互终端:stdin/stdout 即
-// 连接本身(IAC 已由 telnetConn 处理),登录与 shell 交互完全透传。
-func newTelnetTerminal(conn io.ReadWriteCloser) *Terminal {
-	return &Terminal{stdin: conn, stdout: conn, closer: conn}
+// telnetStdin 终端上行:实现 NVT 行模式(与真实 telnet 客户端在远端未协商
+// 接管回显时的行为一致)——
+//   - 本地回显:敲下的字符立即出现在本终端(此前裸透传时,HTTP 等 ASCII
+//     服务自身不回显,表现为"输入无反应");
+//   - 退格编辑:\b/0x7f 本地删字,回显 \b \b 擦除;
+//   - 行结束:回车按 NVT 规范补全为 CR LF 整行发送(此前只透传孤立 CR,
+//     按 RFC 854 行结束是 CR LF,HTTP 等服务端无法识别孤 CR,请求永无响应);
+//   - CR 后紧跟的 LF 属同一行结束,去重避免多发一次空行。
+type telnetStdin struct {
+	sess *Session
+	conn *telnetConn
+	out  *io.PipeWriter // 本地回显出口(与本终端的远端输出共用一条流)
+
+	line   []byte
+	lastCR bool
+}
+
+func (w *telnetStdin) Write(p []byte) (int, error) {
+	for i, b := range p {
+		switch {
+		case b == '\n' && w.lastCR: // CR LF 中的 LF:已随 CR 发送
+		case b == '\r' || b == '\n':
+			w.line = append(w.line, '\r', '\n')
+			w.echo([]byte("\r\n"))
+			if _, err := w.conn.Write(w.line); err != nil {
+				return i, err
+			}
+			w.line = w.line[:0]
+		case b == '\b' || b == 0x7f:
+			if len(w.line) > 0 {
+				w.line = w.line[:len(w.line)-1]
+				w.echo([]byte("\b \b"))
+			}
+		default:
+			w.line = append(w.line, b)
+			w.echo([]byte{b})
+		}
+		w.lastCR = b == '\r'
+	}
+	return len(p), nil
+}
+
+func (w *telnetStdin) echo(b []byte) { _, _ = w.out.Write(b) }
+
+func (w *telnetStdin) Close() error {
+	w.sess.dropTelnetConn(w.conn)
+	return nil
+}
+
+// newTelnetTerminal 把一个终端附着到它独享的 telnet 连接上:远端输出由泵
+// 协程拷入本终端的管道(连接独享,无需多路广播);上行经 telnetStdin 的
+// NVT 行模式处理。连接关闭时泵协程把错误带给读侧,前端即收到 exit。
+func newTelnetTerminal(sess *Session, conn *telnetConn) *Terminal {
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := io.Copy(pw, conn)
+		pw.CloseWithError(err)
+	}()
+	in := &telnetStdin{sess: sess, conn: conn, out: pw}
+	return &Terminal{stdin: in, stdout: pr, closer: in}
 }
 
 // ErrSSHOnly 统一应答依赖 SSH 通道的能力调用(telnet 会话前端不提供这些

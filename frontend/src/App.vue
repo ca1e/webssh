@@ -757,7 +757,7 @@ async function duplicate(host) {
             <!-- 连接中:乐观 tab 状态页,拨号完成后原地切换为终端 -->
             <div v-if="s.status === 'connecting'" class="conn-state">
               <el-icon :size="30" class="is-loading conn-spin"><Loading /></el-icon>
-              <div class="conn-title">正在连接 {{ s.username }}@{{ s.host }}</div>
+              <div class="conn-title">正在连接 {{ s.connType === 'telnet' ? s.host : `${s.username}@${s.host}` }}</div>
               <div v-if="s.jumpName" class="conn-sub">经跳板机 {{ s.jumpName }}</div>
               <div class="conn-elapsed">
                 已等待 {{ s.elapsed || 0 }} 秒<span v-if="(s.elapsed || 0) >= 5">,仍在等待远端响应…</span>

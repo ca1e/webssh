@@ -73,7 +73,7 @@ watch(
     form.host = props.host?.host || ''
     form.port = props.host?.port || (props.host?.conn_type === 'telnet' ? 23 : 22)
     form.conn_type = props.host?.conn_type || 'ssh'
-    form.username = props.host?.username || 'root'
+    form.username = props.host?.username || (props.host?.conn_type === 'telnet' ? '' : 'root')
     form.auth_type = props.host?.auth_type || 'password'
     form.password = ''
     form.key_path = props.host?.key_path || ''
@@ -96,7 +96,22 @@ async function loadKeys() {
 }
 
 function payload() {
-  return { ...form, id: props.host?.id || '', port: Number(form.port) || (isTelnet.value ? 23 : 22) }
+  const base = { ...form, id: props.host?.id || '', port: Number(form.port) || (isTelnet.value ? 23 : 22) }
+  if (isTelnet.value) {
+    // telnet 无用户/认证概念:清空 SSH 专属字段,避免隐藏表单里预填的
+    // 默认值(如新建时 username='root')被提交入库后在列表中显示
+    Object.assign(base, {
+      username: '',
+      auth_type: '',
+      password: '',
+      key_path: '',
+      passphrase: '',
+      jump_id: '',
+      startup_cmd: '',
+      follow_ssh_path: false,
+    })
+  }
+  return base
 }
 
 async function doSave() {

@@ -115,6 +115,16 @@ func (a *API) createHost(c *gin.Context) {
 		fail(c, 400, msg)
 		return
 	}
+	// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空(表单在切到
+	// telnet 前预填的默认值如 username=root 不得入库,否则列表会显示 root)
+	username, authType := strings.TrimSpace(req.Username), req.AuthType
+	password, keyPath, passphrase := req.Password, req.KeyPath, req.Passphrase
+	jumpID, startupCmd, follow := req.JumpID, req.StartupCmd, req.FollowSSHPath
+	if ct == store.ConnTelnet {
+		username, authType = "", ""
+		password, keyPath, passphrase = "", "", ""
+		jumpID, startupCmd, follow = "", "", false
+	}
 	if ct == store.ConnSSH {
 		if req.AuthType == store.AuthPassword && req.Password == "" {
 			fail(c, 400, "密码认证必须填写密码")
@@ -128,11 +138,11 @@ func (a *API) createHost(c *gin.Context) {
 	h, err := a.st.Put(store.Host{
 		Name: strings.TrimSpace(req.Name), Host: strings.TrimSpace(req.Host),
 		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
-		Username:      strings.TrimSpace(req.Username),
-		AuthType:      req.AuthType, Password: req.Password, KeyPath: req.KeyPath,
-		Passphrase: req.Passphrase, JumpID: req.JumpID,
-		Group: strings.TrimSpace(req.Group), StartupCmd: req.StartupCmd,
-		FollowSSHPath: req.FollowSSHPath,
+		Username:      username,
+		AuthType:      authType, Password: password, KeyPath: keyPath,
+		Passphrase: passphrase, JumpID: jumpID,
+		Group: strings.TrimSpace(req.Group), StartupCmd: startupCmd,
+		FollowSSHPath: follow,
 	})
 	if err != nil {
 		fail(c, 500, err.Error())

@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
             </el-icon>
             <div class="conn-info">
               <div class="conn-name">{{ h.name }}</div>
-              <div class="conn-host">{{ h.host }}:{{ h.port }} · {{ h.username }}</div>
+              <div class="conn-host">{{ h.host }}:{{ h.port }}<template v-if="h.conn_type !== 'telnet'"> · {{ h.username }}</template></div>
             </div>
           </div>
         </template>

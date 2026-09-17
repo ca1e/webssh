@@ -37,6 +37,9 @@ type Manager struct {
 	// (WS 强断→重连)与瞬时断网;关浏览器后 sessionStorage 随标签页销毁,
 	// 孤儿会话无人再接管,宽限期一到即回收,不再永久占用连接与 maxSessions 名额。
 	orphanGrace time.Duration
+
+	// dialTelnetFn telnet 拨号注入点(测试用);nil 时使用真实拨号。
+	dialTelnetFn func(ctx context.Context, h store.Host) (*telnetConn, string, error)
 }
 
 func New(configDir string, maxSessions int, orphanGrace time.Duration) *Manager {
@@ -235,7 +238,7 @@ func dialThroughJump(ctx context.Context, jc *ssh.Client, targetAddr string) (ne
 // TestConnection 只验证拨号与认证,不保留连接。
 func (m *Manager) TestConnection(ctx context.Context, h store.Host, jump *store.Host) error {
 	if store.NormalizeConnType(h.ConnType) == store.ConnTelnet {
-		conn, addr, err := dialTelnet(ctx, h)
+		conn, addr, err := m.dialTelnetConn(ctx, h)
 		if err != nil {
 			return fmt.Errorf("连接 %s 失败: %w", addr, err)
 		}
@@ -344,8 +347,9 @@ func (m *Manager) OpenSession(ctx context.Context, h store.Host, jump *store.Hos
 }
 
 // openTelnetSession 建立 telnet 会话:连接即交互终端,登录在终端内透传完成。
+// 首条连接供首个终端复用;分屏等后续终端由 telnetTerminal 独立拨号。
 func (m *Manager) openTelnetSession(ctx context.Context, h store.Host) (*Session, error) {
-	conn, addr, err := dialTelnet(ctx, h)
+	conn, addr, err := m.dialTelnetConn(ctx, h)
 	if err != nil {
 		return nil, fmt.Errorf("连接 %s 失败: %w", addr, err)
 	}
@@ -381,13 +385,15 @@ type Session struct {
 
 	OpenedAt time.Time `json:"-"`
 
-	mu         sync.Mutex
-	closed     bool
-	client     *ssh.Client
-	jumpClient *ssh.Client // 非空时由本会话持有并负责关闭
-	conn       net.Conn    // telnet 会话的底层连接(ssh 会话为 nil)
-	connType   string
-	targetAddr string
+	mu          sync.Mutex
+	closed      bool
+	client      *ssh.Client
+	jumpClient  *ssh.Client              // 非空时由本会话持有并负责关闭
+	conn        net.Conn                 // telnet 建立连接时拨号的首条连接(ssh 会话为 nil)
+	connClaimed bool                     // telnet:conn 是否已被首个终端认领
+	telnetExtra map[*telnetConn]struct{} // telnet:后续终端(分屏)独立拨号的连接
+	connType    string
+	targetAddr  string
 
 	// 终端附着引用计数与孤儿回收计时器(s.mu 保护)。会话的存活性自此等价于
 	// "至少一个终端 WS 附着,或断开后仍处于宽限期内";前端关浏览器/关闭标签页
@@ -542,6 +548,11 @@ func (s *Session) Close() {
 	}
 	s.forwards = map[string]*Forward{}
 	client, jump, conn := s.client, s.jumpClient, s.conn
+	extra := make([]*telnetConn, 0, len(s.telnetExtra))
+	for c := range s.telnetExtra {
+		extra = append(extra, c)
+	}
+	s.telnetExtra = nil
 	s.mu.Unlock()
 
 	if client != nil {
@@ -552,6 +563,11 @@ func (s *Session) Close() {
 	}
 	if conn != nil {
 		conn.Close()
+	}
+	// telnet 分屏窗格各自独享的连接一并回收(终端尚未关闭的也不例外:
+	// 会话已死,窗格随即收到 EOF)
+	for _, c := range extra {
+		c.Close()
 	}
 	s.mgr.mu.Lock()
 	delete(s.mgr.sessions, s.ID)
@@ -631,13 +647,7 @@ func (s *Session) NewTerminal(cols, rows int, startupCmd string) (*Terminal, err
 		if err := s.checkOpen(); err != nil {
 			return nil, err
 		}
-		s.mu.Lock()
-		conn := s.conn
-		s.mu.Unlock()
-		if conn == nil {
-			return nil, fmt.Errorf("会话已断开")
-		}
-		return newTelnetTerminal(conn), nil
+		return s.telnetTerminal()
 	}
 	if cols <= 0 {
 		cols = 80
@@ -659,6 +669,48 @@ func (s *Session) NewTerminal(cols, rows int, startupCmd string) (*Terminal, err
 		// exec 通道启动失败(罕见):回退登录 shell + type-ahead
 	}
 	return s.newTerminal(cols, rows, func(sess *ssh.Session) error { return sess.Shell() }, shellInitPayload(startupCmd), osc7HookLine, false)
+}
+
+// telnetTerminal 为当前终端取一条独享连接:首个终端复用建立会话时拨号的
+// conn,后续终端(分屏新窗格、断线后的重连)各自独立拨号——telnet 无通道
+// 复用能力,如此每个窗格即一条独立会话,与 SSH 分屏各自申请 PTY 通道同语义。
+// 终端关闭时经 dropTelnetConn 只回收自己的连接,不影响其他窗格。
+func (s *Session) telnetTerminal() (*Terminal, error) {
+	if err := s.checkOpen(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if c, ok := s.conn.(*telnetConn); ok && !s.connClaimed {
+		s.connClaimed = true
+		s.mu.Unlock()
+		return newTelnetTerminal(s, c), nil
+	}
+	s.mu.Unlock()
+
+	conn, _, err := s.mgr.dialTelnetConn(context.Background(), s.Host)
+	if err != nil {
+		return nil, fmt.Errorf("建立终端连接失败: %w", err)
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		conn.Close()
+		return nil, fmt.Errorf("会话已断开")
+	}
+	if s.telnetExtra == nil {
+		s.telnetExtra = make(map[*telnetConn]struct{})
+	}
+	s.telnetExtra[conn] = struct{}{}
+	s.mu.Unlock()
+	return newTelnetTerminal(s, conn), nil
+}
+
+// dropTelnetConn 注销并关闭一个终端独享的连接(终端关闭时回调)。
+func (s *Session) dropTelnetConn(conn *telnetConn) {
+	s.mu.Lock()
+	delete(s.telnetExtra, conn)
+	s.mu.Unlock()
+	_ = conn.Close()
 }
 
 // newTerminal 建立 PTY、以 start 指定的方式启动 shell 并提交预输入。
