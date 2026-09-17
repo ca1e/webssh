@@ -231,12 +231,25 @@ func (w *telnetStdin) Close() error {
 	return nil
 }
 
+// telnetBanner 终端首屏提示:telnet 无登录握手,连上即是黑屏,打印已连接
+// 提示并新起一行,用户即可在本地回显下直接输入。
+func telnetBanner(h store.Host) string {
+	host := h.Host
+	if p := h.Port; p != 0 && p != 23 {
+		host = fmt.Sprintf("%s:%d", host, p)
+	}
+	return "Connected to " + host + "\r\n"
+}
+
 // newTelnetTerminal 把一个终端附着到它独享的 telnet 连接上:远端输出由泵
-// 协程拷入本终端的管道(连接独享,无需多路广播);上行经 telnetStdin 的
-// NVT 行模式处理。连接关闭时泵协程把错误带给读侧,前端即收到 exit。
+// 协程拷入本终端的管道(连接独享,无需多路广播),泵先写欢迎行再拷远端,
+// 保证横幅总在远端输出之前;上行经 telnetStdin 的 NVT 行模式处理。连接
+// 关闭时泵协程把错误带给读侧,前端即收到 exit。
 func newTelnetTerminal(sess *Session, conn *telnetConn) *Terminal {
 	pr, pw := io.Pipe()
+	banner := telnetBanner(sess.Host)
 	go func() {
+		_, _ = pw.Write([]byte(banner)) // 管道写入阻塞至 WS 泵开始消费,须在泵协程内
 		_, err := io.Copy(pw, conn)
 		pw.CloseWithError(err)
 	}()

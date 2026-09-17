@@ -156,6 +156,46 @@ func newTestTelnetSession(t *testing.T) (*Manager, *Session, *fakeDialer) {
 	return m, s, fd
 }
 
+// TestTelnetBanner 终端首屏:连接建立即打印 Connected 提示并新起一行,
+// 非默认端口时带端口号。
+func TestTelnetBanner(t *testing.T) {
+	_, s, _ := newTestTelnetSession(t)
+	term, err := s.NewTerminal(80, 24, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len("Connected to fake\r\n"))
+	if err := readAllTimeout(t, term.Stdout(), got); err != nil {
+		t.Fatalf("读取终端首屏: %v", err)
+	}
+	if string(got) != "Connected to fake\r\n" {
+		t.Fatalf("终端首屏 %q, want \"Connected to fake\\r\\n\"", got)
+	}
+
+	// 非默认端口:提示中带端口
+	h := store.Host{Name: "t", Host: "fake", Port: 2323}
+	m2 := New(t.TempDir(), 0, 0)
+	m2.dialTelnetFn = func(context.Context, store.Host) (*telnetConn, string, error) {
+		c1, c2 := net.Pipe()
+		t.Cleanup(func() { c1.Close(); c2.Close() })
+		return newTelnetConn(c1), "fake:2323", nil
+	}
+	if _, err := m2.openTelnetSession(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+	term2, err := m2.List()[0].NewTerminal(80, 24, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2 := make([]byte, len("Connected to fake:2323\r\n"))
+	if err := readAllTimeout(t, term2.Stdout(), got2); err != nil {
+		t.Fatalf("读取终端首屏: %v", err)
+	}
+	if string(got2) != "Connected to fake:2323\r\n" {
+		t.Fatalf("终端首屏 %q, want \"Connected to fake:2323\\r\\n\"", got2)
+	}
+}
+
 // TestTelnetTerminalIndependentConns 分屏语义:每个终端独享一条连接,互不
 // 干扰;关闭一个终端只回收它自己的连接;会话关闭回收全部连接。
 func TestTelnetTerminalIndependentConns(t *testing.T) {
