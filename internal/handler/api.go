@@ -59,6 +59,8 @@ func (a *API) Register(r gin.IRouter) {
 	r.DELETE("/api/hosts/:id", a.deleteHost)
 	r.POST("/api/hosts/:id/duplicate", a.duplicateHost)
 	r.POST("/api/hosts/test", a.testHost)
+	r.GET("/api/hosts/export", a.exportHosts)
+	r.POST("/api/hosts/import", a.importHosts)
 	r.GET("/api/keys", a.listKeys)
 
 	// 会话

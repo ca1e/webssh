@@ -57,7 +57,29 @@ export const updateHost = (id, h) => put(`/api/hosts/${id}`, h)
 export const deleteHost = (id) => del(`/api/hosts/${id}`)
 export const duplicateHost = (id) => post(`/api/hosts/${id}/duplicate`)
 export const testHost = (h) => post('/api/hosts/test', h)
+export const importHosts = (hosts) => post('/api/hosts/import', hosts)
 export const listKeys = () => get('/api/keys')
+
+// 导出主机列表:返回 hosts.json 原文 Blob(不走 JSON 解析,保留文件字节)
+export async function fetchHostsFile() {
+  let res
+  try {
+    res = await fetch('/api/hosts/export')
+  } catch {
+    throw new Error('无法连接后端服务')
+  }
+  if (!res.ok) {
+    if (res.status === 401) authState.locked = true
+    let msg = ''
+    try {
+      msg = (await res.json())?.error || ''
+    } catch {
+      /* 非 JSON 错误体 */
+    }
+    throw new Error(msg || `导出失败(HTTP ${res.status})`)
+  }
+  return res.blob()
+}
 
 // ---------- 会话 ----------
 

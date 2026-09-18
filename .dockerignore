@@ -1,0 +1,10 @@
+.git
+.config
+webssh
+frontend/node_modules
+# dist 由镜像内 npm run build 重新生成,本机产物不进上下文
+frontend/dist
+frontend/cdc测试
+docker-compose.yml
+Dockerfile
+.dockerignore

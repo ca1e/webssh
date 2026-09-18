@@ -154,6 +154,9 @@ func (s *Store) Delete(id string) bool {
 	return false
 }
 
+// HostWire 是 hosts.json 磁盘格式的别名,暴露给导入/导出 API 使用。
+type HostWire = hostWire
+
 // hostWire 是 hosts.json 的磁盘格式:密码/口令以 base64 编码存储(混淆,非加密)。
 type hostWire struct {
 	ID            string `json:"id"`
@@ -221,6 +224,59 @@ func fromWire(w hostWire) (Host, error) {
 		Group: w.Group, StartupCmd: w.StartupCmd,
 		FollowSSHPath: w.FollowSSHPath,
 	}, nil
+}
+
+// HostFromWire 磁盘格式 → 内存格式;base64 凭据非法时返回错误,供导入侧逐条跳过。
+func HostFromWire(w HostWire) (Host, error) {
+	return fromWire(w)
+}
+
+// ReadRaw 返回 hosts.json 原文字节(导出主机列表时直接下载配置文件);
+// 文件尚不存在(从未保存过主机)时返回空数组。
+func (s *Store) ReadRaw() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []byte("[]"), nil
+	}
+	return data, err
+}
+
+// UpsertMany 批量合并导入主机:按 (Name, Host) 匹配,命中则整条覆盖但保留
+// 现有 ID(不破坏会话/跳板引用);未命中则追加,ID 为空或与现有主机冲突时
+// 重新生成。同批内同名同主机的多条按后者覆盖前者。一次性落盘,返回写入条数。
+func (s *Store) UpsertMany(hosts []Host) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range hosts {
+		replaced := false
+		for i := range s.hosts {
+			if s.hosts[i].Name == h.Name && s.hosts[i].Host == h.Host {
+				h.ID = s.hosts[i].ID
+				s.hosts[i] = h
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			taken := h.ID == ""
+			for _, e := range s.hosts {
+				if e.ID == h.ID {
+					taken = true
+					break
+				}
+			}
+			if taken {
+				h.ID = NewID()
+			}
+			s.hosts = append(s.hosts, h)
+		}
+	}
+	if err := s.save(); err != nil {
+		return 0, err
+	}
+	return len(hosts), nil
 }
 
 // save 原子写入:先写临时文件再 rename,权限 0600(内容含密码,base64 编码)。

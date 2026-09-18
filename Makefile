@@ -1,6 +1,7 @@
 BINARY := webssh
+IMAGE := webssh:latest
 
-.PHONY: help frontend-build build run dev-backend dev-frontend dev test integration test-ssh-server clean
+.PHONY: help frontend-build build run dev-backend dev-frontend dev test integration test-ssh-server clean docker-build docker-up docker-down docker-logs
 
 help:
 	@echo "frontend-build     构建前端(npm install + vite build)"
@@ -12,6 +13,10 @@ help:
 	@echo "test               单元测试(go test ./...)"
 	@echo "integration        集成测试(自动拉起 cmd/testssh,需 go 工具链)"
 	@echo "test-ssh-server    启动本地测试 SSH 服务端(:2222,用户 test/test123)"
+	@echo "docker-build       构建 Docker 镜像 $(IMAGE)(三阶段:前端/Go/运行时)"
+	@echo "docker-up          docker compose 构建并后台启动(宿主网络 :8090)"
+	@echo "docker-down        docker compose 停止并移除容器"
+	@echo "docker-logs        跟踪 compose 服务运行日志"
 	@echo "clean              清理二进制与前端构建产物"
 
 frontend-build:
@@ -40,6 +45,18 @@ integration:
 
 test-ssh-server:
 	go run ./cmd/testssh -addr :2222 -user test -pass test123
+
+docker-build:
+	docker build -t $(IMAGE) .
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f
 
 clean:
 	rm -f $(BINARY)

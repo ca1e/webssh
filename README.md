@@ -25,6 +25,17 @@ make run          # 构建前端+后端,启动 http://127.0.0.1:8090
 make dev          # 等价于同时启动 dev-backend(127.0.0.1:8090) 与 dev-frontend(:5174)
 ```
 
+Docker Compose 部署(单容器,宿主网络):
+
+```bash
+docker compose up -d --build   # 构建镜像并启动,服务监听宿主机 :8090
+```
+
+- **配置持久化**:`hosts.json` / `known_hosts.json` / 锁屏密码落在 named volume `webssh-config`(容器内 `/home/webssh/.config`);查看/备份用 `docker compose exec webssh cat /home/webssh/.config/webssh/hosts.json` 或 `docker volume inspect webssh_webssh-config`。
+- **本机私钥**:默认把宿主 `~/.ssh` 只读挂进容器,供"本地私钥"认证方式选用;宿主用户 UID 非 1000 时用 `docker compose build --build-arg WEBSSH_UID=<uid>` 对齐,或改用 `WEBSSH_SSH_KEYS_DIR` 挂载其他路径。
+- **网络**:`network_mode: host`,监听 `:8090` 即绑定所有网卡、局域网可达——容器化不改变"API 无独立鉴权"的前提,**务必先在设置里设置锁屏密码**;只想本机访问可把 `WEBSSH_LISTEN_ADDR` 改回 `127.0.0.1:8090`。
+- 其他环境变量(`WEBSSH_MAX_SESSIONS` / `WEBSSH_ORPHAN_GRACE`)直接加在 compose 的 `environment:` 里。
+
 本机没有 sshd 时,可用自带的测试服务端联调(用户 test / 密码 test123):
 
 ```bash

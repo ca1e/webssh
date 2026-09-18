@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,6 +83,87 @@ func (a *API) listHosts(c *gin.Context) {
 		out = append(out, toView(h))
 	}
 	c.JSON(200, out)
+}
+
+// exportHosts 直接下载 hosts.json 配置文件原文(凭据为 base64 混淆,非加密)。
+func (a *API) exportHosts(c *gin.Context) {
+	data, err := a.st.ReadRaw()
+	if err != nil {
+		fail(c, 400, "读取配置文件失败: "+err.Error())
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="hosts.json"`)
+	c.Data(200, "application/json; charset=utf-8", data)
+}
+
+// importNormalize 按 createHost 同口径校验并规范化导入条目,返回是否有效。
+func importNormalize(h store.Host) (store.Host, bool) {
+	h.Name = strings.TrimSpace(h.Name)
+	h.Host = strings.TrimSpace(h.Host)
+	h.Username = strings.TrimSpace(h.Username)
+	h.Group = strings.TrimSpace(h.Group)
+	ct := store.NormalizeConnType(h.ConnType)
+	h.ConnType = ct
+	h.Port = orDefault(h.Port, defaultPort(ct))
+	if h.Name == "" || h.Host == "" {
+		return h, false
+	}
+	if ct == store.ConnTelnet {
+		// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空(同 createHost)
+		h.Username, h.AuthType = "", ""
+		h.Password, h.KeyPath, h.Passphrase = "", "", ""
+		h.JumpID, h.StartupCmd, h.FollowSSHPath = "", "", false
+		return h, true
+	}
+	if h.Username == "" {
+		return h, false
+	}
+	if h.AuthType != store.AuthPassword && h.AuthType != store.AuthKey {
+		return h, false
+	}
+	if h.AuthType == store.AuthPassword && h.Password == "" {
+		return h, false
+	}
+	if h.AuthType == store.AuthKey && h.KeyPath == "" {
+		return h, false
+	}
+	return h, true
+}
+
+// importHosts 按 hosts.json 磁盘格式导入并合并(同名+同主机覆盖,其余保留);
+// 文件整体不合法返回 400,单条无效静默跳过。
+func (a *API) importHosts(c *gin.Context) {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	var wires []store.HostWire
+	if err := dec.Decode(&wires); err != nil {
+		fail(c, 400, "文件格式错误")
+		return
+	}
+	if dec.More() {
+		fail(c, 400, "文件格式错误")
+		return
+	}
+	hosts := make([]store.Host, 0, len(wires))
+	for _, w := range wires {
+		h, err := store.HostFromWire(w)
+		if err != nil {
+			continue // 凭据非合法 base64,静默跳过该条
+		}
+		if h, ok := importNormalize(h); ok {
+			hosts = append(hosts, h)
+		}
+	}
+	if len(hosts) == 0 {
+		fail(c, 400, "文件中没有有效主机")
+		return
+	}
+	n, err := a.st.UpsertMany(hosts)
+	if err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "count": n})
 }
 
 // validateHost 校验公共字段与按连接方式的必填项。

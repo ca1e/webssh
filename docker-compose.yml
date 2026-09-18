@@ -1,0 +1,24 @@
+# docker compose up -d --build   构建并启动(数据落在 named volume webssh-config)
+services:
+  webssh:
+    build: .
+    image: webssh:latest
+    container_name: webssh
+    restart: unless-stopped
+    # 宿主网络:容器直接占用宿主机端口,无需 ports 映射;
+    # 监听 :8090 即绑定 0.0.0.0,局域网可达(务必先在设置里锁定屏密码)
+    network_mode: host
+    environment:
+      # 宿主网络下即绑定宿主机全部网卡的 8090;临时换端口:WEBSSH_LISTEN_ADDR=":8091" docker compose up -d
+      WEBSSH_LISTEN_ADDR: "${WEBSSH_LISTEN_ADDR:-:8090}"
+      # WEBSSH_MAX_SESSIONS: "64"
+      # WEBSSH_ORPHAN_GRACE: "5m"
+    volumes:
+      # 配置目录(hosts.json / known_hosts.json / 锁屏密码)持久化到 named volume
+      - webssh-config:/home/webssh/.config
+      # 本机私钥(只读),供主机表单"本地私钥"认证方式选用;换密钥路径请改左侧
+      # (用 ${HOME} 而非 ~,compose 只对环境变量插值可靠)
+      - ${HOME}/.ssh:/home/webssh/.ssh:ro
+
+volumes:
+  webssh-config:
