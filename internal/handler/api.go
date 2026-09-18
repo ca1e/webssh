@@ -105,6 +105,7 @@ func (a *API) Register(r gin.IRouter) {
 	r.GET("/api/sessions/:id/host-info", a.hostInfo)
 	r.GET("/api/sessions/:id/metrics/ws", a.metricsWS)
 	r.GET("/api/sessions/:id/docker/containers", a.dockerContainers)
+	r.GET("/api/sessions/:id/docker/info", a.dockerInfo)
 	r.GET("/api/sessions/:id/docker/inspect", a.dockerInspect)
 	r.GET("/api/sessions/:id/docker/logs/ws", a.dockerLogsWS)
 	r.GET("/api/sessions/:id/docker/shell/ws", a.dockerExecWS)

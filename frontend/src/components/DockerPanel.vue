@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Document, Refresh, Search, VideoPlay } from '@element-plus/icons-vue'
-import { dockerContainers, dockerInspect } from '../api'
+import { dockerContainers, dockerInfo, dockerInspect } from '../api'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -13,6 +13,18 @@ const containers = ref([])
 const loading = ref(false)
 const error = ref('')
 const filterText = ref('')
+
+// 信息卡片(参考 K8s 面板):docker info 版本/计数 + Compose 项目列表
+const info = ref(null)
+const compose = ref(null)
+
+async function loadInfo() {
+  try {
+    const res = await dockerInfo(props.session.id)
+    info.value = res.available ? res.info : null
+    compose.value = res.available ? res.compose : null
+  } catch { /* 静默:卡片保留上次数据 */ }
+}
 
 const filteredContainers = computed(() => {
   const q = filterText.value.trim().toLowerCase()
@@ -51,6 +63,12 @@ async function refresh() {
     const res = await dockerContainers(props.session.id)
     available.value = res.available
     containers.value = res.containers || []
+    if (available.value) {
+      loadInfo()
+    } else {
+      info.value = null
+      compose.value = null
+    }
   } catch (e) {
     error.value = e.message
   }
@@ -282,6 +300,32 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="available">
+      <!-- 信息卡片(参考 K8s 面板):版本/计数 + Compose 项目 -->
+      <div class="metric-cards" v-if="info">
+        <div class="metric-card">
+          <div class="card-title">Docker</div>
+          <div class="metric-row"><span class="muted">Client 版本</span><span style="font-family:monospace">{{ info.client_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">Server 版本</span><span style="font-family:monospace">{{ info.server_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">API 版本</span><span style="font-family:monospace">{{ info.api_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">存储驱动</span><span style="font-family:monospace">{{ info.storage_driver || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">系统</span><span style="font-family:monospace;font-size:11px" :title="info.os">{{ info.os_type }} {{ info.arch }}</span></div>
+          <div class="metric-row"><span class="muted">容器</span><span style="font-family:monospace">{{ info.running }} 运行 / {{ info.containers }} 总数</span></div>
+          <div class="metric-row"><span class="muted">镜像</span><span style="font-family:monospace">{{ info.images }}</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="card-title">Compose</div>
+          <div class="metric-row"><span class="muted">命令</span><span style="font-family:monospace">{{ compose?.command || '未安装' }}</span></div>
+          <div class="metric-row" v-if="compose?.version"><span class="muted">版本</span><span style="font-family:monospace">{{ compose.version }}</span></div>
+          <template v-if="compose?.projects?.length">
+            <div class="metric-row" v-for="p in compose.projects" :key="p.name">
+              <span style="font-family:monospace;font-size:12px">{{ p.name }}</span>
+              <span class="muted" style="font-size:11px" :title="p.config_files">{{ p.status }}</span>
+            </div>
+          </template>
+          <div class="metric-row" v-else><span class="muted">项目</span><span class="muted">无运行中的项目</span></div>
+        </div>
+      </div>
+
       <div class="docker-table">
         <el-table
           :data="filteredContainers"
@@ -318,7 +362,7 @@ onBeforeUnmount(() => {
       </div>
     </template>
     <template v-else-if="!loading">
-      <div class="empty-docker">
+      <div class="empty-state">
         <el-empty description="Docker 未安装或未运行" :image-size="60" />
       </div>
     </template>

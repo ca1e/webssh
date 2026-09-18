@@ -132,6 +132,8 @@ export const metricsWSUrl = (sid) => {
 
 // ---------- Docker ----------
 export const dockerContainers = (sid) => get(`/api/sessions/${sid}/docker/containers`)
+// 版本 + Compose 项目卡片:低频变化,仅打开面板与手动刷新时拉取
+export const dockerInfo = (sid) => get(`/api/sessions/${sid}/docker/info`)
 export const dockerInspect = (sid, cid) => get(`/api/sessions/${sid}/docker/inspect?cid=${encodeURIComponent(cid)}`)
 
 // ---------- 转发 ----------

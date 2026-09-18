@@ -1111,7 +1111,8 @@ html.dark .lock-screen {
   text-decoration: underline;
 }
 
-.empty-docker {
+/* 面板不可用时的空态(Docker 未安装 / K8s 面板 kubectl 缺失等) */
+.empty-state {
   flex: 1;
   display: flex;
   align-items: center;

@@ -207,9 +207,9 @@ onBeforeUnmount(() => {
       <el-button size="small" :icon="Refresh" :loading="stateLoading" title="重新探测集群状态" @click="loadState(true)" />
     </div>
 
-    <!-- kubectl 不可用 / 探测失败 -->
-    <div v-if="state && !state.available" class="panel-error">
-      <el-alert :title="state.error || '目标主机未安装 kubectl 或集群不可达'" type="error" show-icon :closable="false" />
+    <!-- kubectl 不可用 / 探测失败(空态样式与 Docker 面板一致) -->
+    <div v-if="state && !state.available" class="empty-state">
+      <el-empty :description="state.error || '目标主机未安装 kubectl 或集群不可达'" :image-size="60" />
     </div>
 
     <!-- 集群状态卡片 -->
