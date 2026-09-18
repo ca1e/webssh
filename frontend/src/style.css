@@ -984,16 +984,32 @@ html.dark .lock-screen {
   color: #e04747;
 }
 
-/* ---------- 主机详情 / Docker 面板 ---------- */
+/* ---------- 主机详情 / Docker / K8s 面板 ---------- */
 
 .host-panel,
-.docker-panel {
+.docker-panel,
+.k8s-panel {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* K8s 面板:命名空间选择 + 过滤工具行 */
+.k8s-pod-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* K8s 面板:局部失败提示(RBAC 等,集群整体可用) */
+.k8s-warn {
+  color: var(--el-color-warning);
+  font-size: 11px;
+  text-align: right;
+  word-break: break-all;
 }
 
 .metric-cards {

@@ -72,6 +72,10 @@ if [ -z "$KUBECTL" ]; then
 fi
 [ -n "$KUBECTL" ] || { echo "目标主机未安装 kubectl(PATH 与登录环境中均未找到)" >&2; exit 1; }`
 
+// KubectlResolveSnippet 供包外(K8s 面板脚本)复用的导出别名:拼接远端脚本时
+// 先定位 kubectl(PATH 直查 + 登录环境回退),行为与包内各脚本完全一致。
+const KubectlResolveSnippet = kubectlResolveSnippet
+
 // k8sPFScript 生成远端桥接 bash 脚本。参数须已通过 validateK8sArgs,
 // 此处仍经 shQuote 注入 shell 变量赋值,双保险。
 func k8sPFScript(namespace, target, port string) string {

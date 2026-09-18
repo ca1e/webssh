@@ -7,6 +7,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { terminalWSUrl } from '../api'
 import { emitCwd } from '../cwdBus'
+import { useContextMenu } from '../contextMenu'
 
 const props = defineProps({
   sid: { type: String, required: true },
@@ -24,17 +25,13 @@ const termEl = ref(null)
 const status = ref('connecting')
 const hasSelection = ref(false)
 
-// 终端右键菜单
+// 终端右键菜单(弹出朝向随视口剩余空间自动翻转)
 const tmenu = reactive({ show: false, x: 0, y: 0 })
+const tmenuEl = ref(null)
+const { open: openMenuAt, close: closeTermMenu } = useContextMenu(tmenu)
 
 function openTermMenu(e) {
-  tmenu.x = e.clientX
-  tmenu.y = e.clientY
-  tmenu.show = true
-}
-
-function closeTermMenu() {
-  tmenu.show = false
+  openMenuAt(e.clientX, e.clientY, tmenuEl)
 }
 
 function doSelectAll() {
@@ -61,10 +58,6 @@ async function doPaste() {
   }
 }
 
-function onGlobalClick() {
-  closeTermMenu()
-}
-
 let term = null
 let fitAddon = null
 let ws = null
@@ -75,6 +68,12 @@ function wsSend(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj))
   }
+}
+
+// 连接建立后窗口尺寸变化时通知服务端同步 PTY 大小。SSH 终端、容器 Shell
+// 与 K8s Pod 终端的服务端均解析 {type:"resize"} 控制帧。
+function sendResize() {
+  if (status.value === 'open') wsSend({ type: 'resize', cols: term.cols, rows: term.rows })
 }
 
 let fitTimer = null
@@ -97,6 +96,7 @@ function fit() {
   fitTimer = setTimeout(() => {
     try {
       fitAddon.fit()
+      sendResize()
     } catch {
       /* 尺寸过小时的 fit 异常可忽略 */
     }
@@ -209,14 +209,10 @@ watch(
 onMounted(() => {
   initTerm()
   connect()
-  window.addEventListener('click', onGlobalClick)
-  window.addEventListener('blur', onGlobalClick)
 })
 
 onBeforeUnmount(() => {
   disposed = true
-  window.removeEventListener('click', onGlobalClick)
-  window.removeEventListener('blur', onGlobalClick)
   if (ro) ro.disconnect()
   if (ws) {
     ws.onclose = null
@@ -262,6 +258,7 @@ onBeforeUnmount(() => {
     <teleport to="body">
       <div
         v-if="tmenu.show"
+        ref="tmenuEl"
         class="ctx-menu"
         :style="{ left: tmenu.x + 'px', top: tmenu.y + 'px' }"
         @contextmenu.prevent

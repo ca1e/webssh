@@ -77,7 +77,7 @@ func TestK8sPFExecCmdEmbedsScript(t *testing.T) {
 	if i < 0 || j < 0 {
 		t.Fatalf("无法定位 base64 载荷: %s", cmd)
 	}
-	payload := strings.Trim(cmd[i+len("echo ") : i+j], "'")
+	payload := strings.Trim(cmd[i+len("echo "):i+j], "'")
 	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		t.Fatalf("base64 载荷无法解码: %v", err)

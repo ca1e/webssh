@@ -36,7 +36,7 @@ test:
 	go test ./...
 
 integration:
-	go test -tags=integration ./internal/sshmgr/
+	go test -tags=integration ./internal/sshmgr/ ./internal/k8smgr/
 
 test-ssh-server:
 	go run ./cmd/testssh -addr :2222 -user test -pass test123

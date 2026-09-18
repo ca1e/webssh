@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowRight, Box, CircleCloseFilled, DArrowRight, FolderOpened, Loading, Monitor, Moon, Plus, Promotion, Setting, Sunny } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Box, CircleCloseFilled, Connection, DArrowRight, FolderOpened, Loading, Monitor, Moon, Plus, Promotion, Setting, Sunny } from '@element-plus/icons-vue'
 import ConnectionList from './components/ConnectionList.vue'
 import HostModal from './components/HostModal.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -10,11 +10,13 @@ import SftpPanel from './components/SftpPanel.vue'
 import ForwardPanel from './components/ForwardPanel.vue'
 import HostPanel from './components/HostPanel.vue'
 import DockerPanel from './components/DockerPanel.vue'
+import K8sPanel from './components/K8sPanel.vue'
 import ContainerLogsPanel from './components/ContainerLogsPanel.vue'
 import TerminalPane from './components/TerminalPane.vue'
 import LockScreen from './components/LockScreen.vue'
 import OverviewPanel from './components/OverviewPanel.vue'
 import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, listSessions, openSession } from './api'
+import { useContextMenu } from './contextMenu'
 import { isDark, settings } from './settings'
 
 const hosts = ref([])
@@ -132,17 +134,27 @@ function splitTerm(s, dir) {
 
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value))
 
-// ---------- 容器日志 / Shell 标签页(从 Docker inspect 打开) ----------
-const containerTabs = ref([]) // {id, type:'logs'|'shell', parentSid, cid, name}
+// ---------- 容器/Pod 日志 / Shell 标签页(从 Docker 或 K8s 面板打开) ----------
+// type: 'container-logs'|'container-shell' 按 cid 去重;
+//       'pod-logs'|'pod-shell' 按 ns/pod(/container) 去重,附 ns/pod/container 字段。
+const containerTabs = ref([]) // {id, type, parentSid, cid, ns, pod, container, name, host, label}
 let containerSeq = 0
 
+// tab 去重键:容器用容器 ID,Pod 用 ns/pod(/container)
+function containerTabKey(t) {
+  return t.type && t.type.startsWith('pod-')
+    ? `${t.ns}/${t.pod}:${t.container || ''}`
+    : t.cid
+}
+
 function openContainerTab(payload) {
-  const { type, sid, cid, name } = payload
+  const { type, sid, name } = payload
   // 找到父会话,取主机 IP
   const parentSession = sessions.value.find((s) => s.id === sid)
   const hostIP = parentSession?.host || ''
-  // 同一容器同类型不重复开
-  const existing = containerTabs.value.find((t) => t.cid === cid && t.type === type && t.parentSid === sid)
+  // 同一目标同类型不重复开
+  const key = containerTabKey(payload)
+  const existing = containerTabs.value.find((t) => containerTabKey(t) === key && t.type === type && t.parentSid === sid)
   if (existing) {
     activeId.value = existing.id
     return
@@ -152,10 +164,13 @@ function openContainerTab(payload) {
     id,
     type,
     parentSid: sid,
-    cid,
+    cid: payload.cid || '',
+    ns: payload.ns || '',
+    pod: payload.pod || '',
+    container: payload.container || '',
     name,
     host: hostIP,
-    label: type === 'container-logs' ? `${name} 📋` : `${name} 🖥`,
+    label: type === 'container-logs' || type === 'pod-logs' ? `${name} 📋` : `${name} 🖥`,
   })
   activeId.value = id
 }
@@ -226,6 +241,7 @@ function collectTabsRecord() {
         fwdOpen: s.fwdOpen,
         hostOpen: s.hostOpen,
         dockerOpen: s.dockerOpen,
+        k8sOpen: s.k8sOpen,
         panelPct: s.panelPct,
         shape: treeShape(s.tree),
         focus: leafPath(s.tree, s.focused) || [],
@@ -291,6 +307,7 @@ async function restoreTabs() {
           fwdOpen: !!r.fwdOpen,
           hostOpen: !!r.hostOpen,
           dockerOpen: !!r.dockerOpen,
+          k8sOpen: !!r.k8sOpen,
           panelPct: r.panelPct || 35,
           tree,
           focused: keyAtLeafPath(tree, r.focus || []) || firstLeafKey(tree),
@@ -323,7 +340,10 @@ function onTabRemove(id) {
 }
 
 // ---------- Tab 右键菜单:关闭 当前/其他/左侧/右侧/全部 ----------
+// 弹出朝向随视口剩余空间自动翻转
 const tabMenu = reactive({ show: false, x: 0, y: 0, targetId: '' })
+const tabMenuEl = ref(null)
+const { open: openTabMenuAt, close: closeTabMenu } = useContextMenu(tabMenu)
 
 // tab 的显示顺序 = 会话 tabs 在前、容器 tabs(设置/容器日志/容器 shell)在后
 function orderedTabIds() {
@@ -342,9 +362,7 @@ const tabMenuCtx = computed(() => {
 
 function openTabMenu(id, x, y) {
   tabMenu.targetId = id
-  tabMenu.x = x
-  tabMenu.y = y
-  tabMenu.show = true
+  openTabMenuAt(x, y, tabMenuEl)
 }
 
 // 事件委托:右键落在任意 tab 项上(含空白处/关闭按钮附近)都视为对该 tab 的操作;
@@ -361,10 +379,6 @@ function onTabsContextmenu(e) {
   if (idx < 0 || idx >= ids.length) return
   e.preventDefault()
   openTabMenu(ids[idx], e.clientX, e.clientY)
-}
-
-function closeTabMenu() {
-  tabMenu.show = false
 }
 
 function removeTabById(id) {
@@ -403,10 +417,6 @@ function onTabMenuAction(action) {
       closeTabsBatch(ids)
       break
   }
-}
-
-function onGlobalClick() {
-  closeTabMenu()
 }
 
 // ---------- Tab 栏滚轮:切换激活标签 ----------
@@ -487,19 +497,12 @@ onMounted(async () => {
     await loadHosts()
     restoreTabs()
   }
-  window.addEventListener('click', onGlobalClick)
-  window.addEventListener('blur', onGlobalClick)
 })
 
 function onUnlocked() {
   loadHosts()
   restoreTabs()
 }
-
-onBeforeUnmount(() => {
-  window.removeEventListener('click', onGlobalClick)
-  window.removeEventListener('blur', onGlobalClick)
-})
 
 async function connect(host, trustNewKey = false) {
   if (connecting.has(host.id)) {
@@ -529,6 +532,7 @@ async function connect(host, trustNewKey = false) {
     fwdOpen: false,
     hostOpen: false,
     dockerOpen: false,
+    k8sOpen: false,
     panelPct: 35, // 右侧功能面板宽度百分比(30-70 之间可拖动)
     tree,
     focused: tree.key,
@@ -634,7 +638,7 @@ async function removeSession(id) {
 }
 
 function togglePanel(session, which) {
-  const flags = ['sftpOpen', 'fwdOpen', 'hostOpen', 'dockerOpen']
+  const flags = ['sftpOpen', 'fwdOpen', 'hostOpen', 'dockerOpen', 'k8sOpen']
   const key = which + 'Open'
   // 打开当前则关闭其他
   if (!session[key]) {
@@ -815,6 +819,16 @@ async function duplicate(host) {
               >
                 Docker
               </el-button>
+              <el-button
+                size="small"
+                :type="s.k8sOpen ? 'primary' : 'default'"
+                plain
+                :icon="Connection"
+                title="K8s 管理:集群状态/Pod 列表/日志/终端(远端需 kubectl)"
+                @click="togglePanel(s, 'k8s')"
+              >
+                K8s
+              </el-button>
               </template>
               <el-divider direction="vertical" />
               <el-button
@@ -852,19 +866,20 @@ async function duplicate(host) {
               />
               <div
                 class="splitter"
-                v-if="s.sftpOpen || s.fwdOpen || s.hostOpen || s.dockerOpen"
+                v-if="s.sftpOpen || s.fwdOpen || s.hostOpen || s.dockerOpen || s.k8sOpen"
                 title="拖动调整宽度(30%-70%)"
                 @mousedown="startResize(s, $event)"
               ></div>
               <div
                 class="side-panel"
-                v-if="s.sftpOpen || s.fwdOpen || s.hostOpen || s.dockerOpen"
+                v-if="s.sftpOpen || s.fwdOpen || s.hostOpen || s.dockerOpen || s.k8sOpen"
                 :style="{ width: (s.panelPct || 35) + '%' }"
               >
                 <SftpPanel v-if="s.sftpOpen" :session="s" :sessions="sessions" />
                 <ForwardPanel v-else-if="s.fwdOpen" :session="s" />
                 <HostPanel v-else-if="s.hostOpen" :session="s" />
                 <DockerPanel v-else-if="s.dockerOpen" :session="s" @open-tab="openContainerTab" />
+                <K8sPanel v-else-if="s.k8sOpen" :session="s" @open-tab="openContainerTab" />
               </div>
             </div>
             </template>
@@ -882,6 +897,26 @@ async function duplicate(host) {
                 :name="ct.name"
                 :host="ct.host"
                 style="flex:1; display:flex; flex-direction:column"
+              />
+            </div>
+            <div v-else-if="ct.type === 'pod-logs'" class="session-content" style="background: #0d1117">
+              <ContainerLogsPanel
+                :ws-url="`/api/sessions/${ct.parentSid}/k8s/logs/ws?namespace=${encodeURIComponent(ct.ns)}&pod=${encodeURIComponent(ct.pod)}${ct.container ? `&container=${encodeURIComponent(ct.container)}` : ''}&tail=200`"
+                :name="ct.pod"
+                :host="ct.host"
+                style="flex:1; display:flex; flex-direction:column"
+              />
+            </div>
+            <div v-else-if="ct.type === 'pod-shell'" class="session-content" style="background: #0d1117; flex-direction: column">
+              <div class="container-shell-header">
+                <span>Pod 终端 · {{ ct.pod }} <span class="muted">({{ ct.ns }} · {{ ct.host }})</span></span>
+              </div>
+              <TerminalPane
+                :sid="ct.parentSid"
+                :host="ct.pod"
+                :active="ct.id === activeId"
+                :ws-url="`/api/sessions/${ct.parentSid}/k8s/exec/ws?namespace=${encodeURIComponent(ct.ns)}&pod=${encodeURIComponent(ct.pod)}${ct.container ? `&container=${encodeURIComponent(ct.container)}` : ''}&cols=120&rows=30`"
+                style="flex:1"
               />
             </div>
             <div v-else class="session-content" style="background: #0d1117; flex-direction: column">
@@ -905,6 +940,7 @@ async function duplicate(host) {
     <teleport to="body">
       <div
         v-if="tabMenu.show"
+        ref="tabMenuEl"
         class="ctx-menu"
         :style="{ left: tabMenu.x + 'px', top: tabMenu.y + 'px' }"
         @contextmenu.prevent

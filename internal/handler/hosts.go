@@ -138,8 +138,8 @@ func (a *API) createHost(c *gin.Context) {
 	h, err := a.st.Put(store.Host{
 		Name: strings.TrimSpace(req.Name), Host: strings.TrimSpace(req.Host),
 		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
-		Username:      username,
-		AuthType:      authType, Password: password, KeyPath: keyPath,
+		Username: username,
+		AuthType: authType, Password: password, KeyPath: keyPath,
 		Passphrase: passphrase, JumpID: jumpID,
 		Group: strings.TrimSpace(req.Group), StartupCmd: startupCmd,
 		FollowSSHPath: follow,

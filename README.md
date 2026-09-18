@@ -10,6 +10,7 @@ Web 前端 SSH 管理工具(Go + Vue3 单二进制部署)。
 - **统一传输**:本机↔远程、远程↔远程 全部走同一异步任务模型(`POST /api/transfers`):目录先枚举计划再由并发 worker(单任务 4,全局上限 8)拷贝,1MB 缓冲;进度经 `/api/transfers/ws` 推送,支持取消。任务仅存内存,进程重启即丢,无断点续传。
 - **主机详情**:静态信息采集与实时指标(5s),Docker 容器列表 / 详情 / 日志流 / 容器内 shell;容器 ID 统一白名单清洗 + shell 转义。
 - **代理 / 转发**:本地端口转发(`-L`)、SOCKS5 动态代理(`-D`),均只监听 127.0.0.1;跳板机在连接配置中指定。另支持 **K8s 服务端口转发**(OpenLens 式交互):选命名空间 → 列出 Service/Pod 及其端口 → 点击端口一键启动,本地端口自动分配,活动列表实时展示连接数与收发流量;亦支持手动添加(命名端口/其他资源类型/指定本地端口)。面向 sshd 禁止 TCP 转发(`AllowTcpForwarding=no`)但部署了 Kubernetes 的主机:流量经 SSH exec 通道在远端由 `kubectl port-forward` 桥接到 Service/Pod——远端只依赖 kubectl(无需 nc/socat),本机纯 Go 实现、跨平台零依赖。
+- **K8s 面板**(借鉴 Freelens 的无 Agent 架构):工具栏打开,面向远端装有 kubectl 的主机。**集群状态**:单次 exec 探测当前 context / 集群名 / API Server / 服务端版本 / 节点就绪数,自动识别发行版(EKS/GKE/AKS/OpenShift/K3s/Kind/Minikube),结果按会话缓存(成功 60s / 失败 10s,支持强制刷新)。**Pod 列表**:经 `kubectl get pods -w --output-watch-events -o json` 的 WebSocket 事件流实时增量更新(List 快照全量替换 + ADDED/MODIFIED/DELETED 事件),支持全部命名空间(`-A`)或指定命名空间、名称过滤,断线 3s 自动重连并重新拉快照;kubectl 失败(RBAC/集群不可达)以错误事件透出。行操作:日志(`kubectl logs -f --tail N` 实时流,复用日志面板)与终端(`kubectl exec -it` 交互 PTY,仅 Running 的 Pod;bash 优先回退 sh,支持窗口 resize),以独立标签页打开、可刷新恢复。kubectl 定位统一走 PATH 直查 + 登录环境回退;动态参数一律 RFC 1123 白名单校验 + 单引号转义。
 
 ## 快速开始
 

@@ -120,6 +120,11 @@ export const deleteForward = (sid, fid) => del(`/api/sessions/${sid}/forwards/${
 export const k8sResources = (sid, namespace) =>
   get(`/api/sessions/${sid}/k8s/resources${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ''}`)
 
+// ---------- K8s 面板(集群状态;Pod watch/日志/终端走 WS,URL 在组件内构造) ----------
+
+export const k8sState = (sid, refresh = false) =>
+  get(`/api/sessions/${sid}/k8s/state${refresh ? '?refresh=1' : ''}`)
+
 // ---------- 工具 ----------
 
 export function joinPath(dir, name) {

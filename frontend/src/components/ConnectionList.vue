@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { ArrowDown, Connection, DArrowLeft, Monitor, Refresh } from '@element-plus/icons-vue'
+import { useContextMenu } from '../contextMenu'
 import { settings } from '../settings'
 
 const props = defineProps({
@@ -59,40 +60,20 @@ function onDblClick(h) {
   if (settings.sidebarOpenMode === 'dblclick') emit('connect', h)
 }
 
-// 右键菜单
+// 右键菜单(弹出朝向随视口剩余空间自动翻转)
 const menu = reactive({ show: false, x: 0, y: 0, host: null })
+const menuEl = ref(null)
+const { open: openMenuAt, close: closeMenu } = useContextMenu(menu)
 
 function openMenu(host, e) {
   menu.host = host
-  menu.x = e.clientX
-  menu.y = e.clientY
-  menu.show = true
-}
-
-function closeMenu() {
-  menu.show = false
+  openMenuAt(e.clientX, e.clientY, menuEl)
 }
 
 function run(action) {
   if (menu.host) emit(action, menu.host)
   closeMenu()
 }
-
-function onGlobalClick() {
-  closeMenu()
-}
-
-onMounted(() => {
-  window.addEventListener('click', onGlobalClick)
-  window.addEventListener('resize', onGlobalClick)
-  window.addEventListener('blur', onGlobalClick)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('click', onGlobalClick)
-  window.removeEventListener('resize', onGlobalClick)
-  window.removeEventListener('blur', onGlobalClick)
-})
 </script>
 
 <template>
@@ -138,6 +119,7 @@ onBeforeUnmount(() => {
     <teleport to="body">
       <div
         v-if="menu.show"
+        ref="menuEl"
         class="ctx-menu"
         :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @contextmenu.prevent

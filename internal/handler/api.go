@@ -10,6 +10,7 @@ import (
 
 	"webssh/internal/auth"
 	"webssh/internal/config"
+	"webssh/internal/k8smgr"
 	"webssh/internal/sshmgr"
 	"webssh/internal/store"
 	"webssh/internal/transfer"
@@ -21,10 +22,11 @@ type API struct {
 	mgr  *sshmgr.Manager
 	tr   *transfer.Manager
 	auth *auth.Store
+	k8s  *k8smgr.Manager
 }
 
 func NewAPI(cfg *config.Config, st *store.Store, mgr *sshmgr.Manager, tr *transfer.Manager, auth *auth.Store) *API {
-	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr, auth: auth}
+	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr, auth: auth, k8s: k8smgr.New()}
 }
 
 func fail(c *gin.Context, code int, msg string) {
@@ -33,7 +35,8 @@ func fail(c *gin.Context, code int, msg string) {
 
 // Register 注册全部路由;各域 handler 分布在同包的
 // hosts.go / sessions.go / terminal.go / sftp.go / transfer.go / local.go /
-// forwards.go / relay.go / docker.go / docker_ws.go / metrics.go 中。
+// forwards.go / relay.go / docker.go / docker_ws.go / metrics.go /
+// k8s_panel.go 中。
 func (a *API) Register(r gin.IRouter) {
 	// 启动密码鉴权:先于全部路由注册;健康检查、/api/auth/* 与静态资源在
 	// 中间件内放行,其余 API(含 WS 升级)要求有效解锁 token
@@ -82,6 +85,12 @@ func (a *API) Register(r gin.IRouter) {
 	r.POST("/api/sessions/:id/forwards", a.addForward)
 	r.DELETE("/api/sessions/:id/forwards/:fid", a.delForward)
 	r.GET("/api/sessions/:id/k8s/resources", a.k8sResources)
+
+	// K8s 面板(集群状态 / Pod watch / Pod 日志流 / Pod 终端)
+	r.GET("/api/sessions/:id/k8s/state", a.k8sState)
+	r.GET("/api/sessions/:id/k8s/pods/ws", a.k8sPodsWS)
+	r.GET("/api/sessions/:id/k8s/logs/ws", a.k8sLogsWS)
+	r.GET("/api/sessions/:id/k8s/exec/ws", a.k8sExecWS)
 
 	// 统一文件传输(本机↔远程、远程↔远程,异步任务 + WS 进度推送)
 	r.POST("/api/transfers", a.createTransfer)
