@@ -1,12 +1,16 @@
 package sshmgr
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // ForwardStats 一条转发的连接与流量统计(k8s 类型填充,其余类型为零)。
@@ -29,6 +33,10 @@ type Forward struct {
 	Namespace string `json:"namespace,omitempty"`
 	K8sTarget string `json:"k8s_target,omitempty"`
 	K8sPort   string `json:"k8s_port,omitempty"`
+	// Mode 转发模式:"std"=标准 SSH 转发通道;"raw"=原始模式(仅 exec
+	// session + 远端辅助程序,绕过 AllowTcpForwarding=no,见 raw_forwarder.go)。
+	// 请求 mode=auto 时按 sshd 探测结果落为二者之一;运行中被拒绝也会热切换。
+	Mode string `json:"mode"`
 	// LastError 最近一次桥接失败的远端诊断(列表快照时填充)。
 	LastError string       `json:"last_error,omitempty"`
 	Stats     ForwardStats `json:"stats"`
@@ -36,6 +44,21 @@ type Forward struct {
 	sess     *Session
 	ln       net.Listener
 	stopOnce sync.Once
+
+	// 原始模式复用通道引用:非 nil 时隧道连接经 rf.dial 发起,
+	// 停止时按引用计数归还(raw_forwarder.go)。
+	rf *RawForwarder
+
+	// dial 当前拨号实现(std:client.Dial;raw:rf.dial),由 stateMu 保护,
+	// 支持运行中热切换(auto 模式被 sshd 拒绝后降级为 raw)。
+	stateMu sync.Mutex
+	dial    func(network, addr string) (net.Conn, error)
+	// rawOnce 保证 std→raw 的自动切换全局只尝试一次。
+	rawOnce sync.Once
+	rawOK   bool // 切换是否成功
+	// stopping 置位于 stop 开始:与运行中的切换竞态时,放弃已取得的
+	// 复用通道引用,避免泄漏。
+	stopping atomic.Bool
 
 	// 原子计数:当前活跃/累计连接与双向流量;atomic 字段不拷出,
 	// ListForwards 快照时汇总进 Stats。
@@ -65,6 +88,74 @@ func (f *Forward) listenAddr() string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(f.ListenPort))
 }
 
+// getMode/setMode 读改当前生效模式;stateMu 保护热切换与快照读的并发。
+func (f *Forward) getMode() string {
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	return f.Mode
+}
+
+func (f *Forward) setMode(m string) {
+	f.stateMu.Lock()
+	f.Mode = m
+	f.stateMu.Unlock()
+}
+
+// dialUpstream 当前生效的拨号实现;auto 模式下标准拨号被 sshd 拒绝时,
+// 首次失败即降级为原始模式并原地重试(监听端口不变,客户端无感)。
+func (f *Forward) dialUpstream(network, addr string) (net.Conn, error) {
+	f.stateMu.Lock()
+	dial := f.dial
+	f.stateMu.Unlock()
+	up, err := dial(network, addr)
+	if err == nil {
+		return up, nil
+	}
+	if f.getMode() == "std" && forwardDenied(err) && f.maybeSwitchRaw() {
+		f.stateMu.Lock()
+		dial = f.dial
+		f.stateMu.Unlock()
+		f.setLastError("标准转发被 sshd 拒绝,已自动切换原始模式")
+		return dial(network, addr)
+	}
+	return nil, err
+}
+
+// maybeSwitchRaw 尝试一次性切换到原始模式复用通道;成功后成为该转发
+// 的固定拨号实现。并发连接同时触发时由 rawOnce 收敛为单次。
+func (f *Forward) maybeSwitchRaw() bool {
+	f.rawOnce.Do(func() {
+		rf, err := f.sess.acquireRawForwarder()
+		if err != nil {
+			f.setLastError("切换原始模式失败: " + err.Error())
+			return
+		}
+		if f.stopping.Load() {
+			rf.release() // 停止竞态:立即归还,引用不泄漏
+			return
+		}
+		f.stateMu.Lock()
+		f.rf, f.dial, f.rawOK = rf, rf.dial, true
+		f.stateMu.Unlock()
+		f.setMode("raw")
+	})
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	return f.rawOK
+}
+
+// forwardDenied 判断拨号失败是否源于 sshd 转发禁令(仅此类错误值得
+// 降级到原始模式;目标不可达等错误两种模式同样无解)。
+func forwardDenied(err error) bool {
+	var ocErr *ssh.OpenChannelError
+	if errors.As(err, &ocErr) {
+		return ocErr.Reason == ssh.Prohibited
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "administratively prohibited") ||
+		strings.Contains(msg, "forwarding disabled")
+}
+
 func validPort(p int) error {
 	if p < 1 || p > 65535 {
 		return fmt.Errorf("端口必须在 1-65535 之间")
@@ -84,7 +175,12 @@ func resolveListenPort(typ string, listenPort int) error {
 	return validPort(listenPort)
 }
 
-func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort string, listenPort, remotePort int) (*Forward, error) {
+// AddForward 建立一条转发。mode 仅对 local/socks5 生效:
+//   - "std":标准 SSH 转发通道(direct-tcpip),sshd 禁止时报错;
+//   - "raw":原始模式(exec 复用通道 + 远端辅助程序),绕过转发禁令;
+//   - ""/"auto":先探测 sshd 配置,禁止则直接用 raw,允许则用 std
+//     (运行中仍被拒时热切换 raw,见 dialUpstream)。
+func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort string, listenPort, remotePort int, mode string) (*Forward, error) {
 	if s.isTelnet() {
 		return nil, ErrSSHOnly
 	}
@@ -94,10 +190,21 @@ func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort stri
 	if err := resolveListenPort(typ, listenPort); err != nil {
 		return nil, err
 	}
+	switch mode {
+	case "", "auto", "std", "raw":
+	default:
+		return nil, fmt.Errorf("未知转发模式 %q(可选 auto/std/raw)", mode)
+	}
 	f := &Forward{
 		sess: s, Type: typ, ListenPort: listenPort,
 		RemoteHost: remoteHost, RemotePort: remotePort,
 		Namespace: namespace, K8sTarget: k8sTarget, K8sPort: k8sPort,
+		dial: func(network, addr string) (net.Conn, error) {
+			s.mu.Lock()
+			client := s.client
+			s.mu.Unlock()
+			return client.Dial(network, addr)
+		},
 	}
 	switch typ {
 	case "local":
@@ -118,16 +225,41 @@ func (s *Session) AddForward(typ, remoteHost, namespace, k8sTarget, k8sPort stri
 	default:
 		return nil, fmt.Errorf("未知转发类型 %q", typ)
 	}
-	// 创建本地监听前,先探测远端 sshd 是否允许 TCP 转发。
-	// 避免"监听成功但隧道被 sshd 拒绝"的假成功问题。
+	// local/socks5 的模式裁决:创建本地监听前先确定拨号通道,避免
+	// "监听成功但隧道不通"的假成功;raw 在此即部署辅助程序,失败直接报错。
 	// k8s 转发走 exec 通道,不经 direct-tcpip,无需(也恰恰要绕过)该检查。
-	if typ != "k8s" {
-		if allowed, reason := s.checkForwardAllowed(); !allowed {
-			return nil, fmt.Errorf("目标主机 sshd 禁止 TCP 转发: %s", reason)
+	if typ == "local" || typ == "socks5" {
+		if mode == "raw" {
+			rf, err := s.acquireRawForwarder()
+			if err != nil {
+				return nil, err
+			}
+			f.rf, f.dial = rf, rf.dial
+			f.Mode = "raw"
+		} else if mode == "std" {
+			if allowed, reason := s.checkForwardAllowed(); !allowed {
+				return nil, fmt.Errorf("目标主机 sshd 禁止 TCP 转发: %s(可改用原始模式)", reason)
+			}
+			f.Mode = "std"
+		} else { // auto
+			allowed, reason := s.checkForwardAllowed()
+			if !allowed {
+				rf, err := s.acquireRawForwarder()
+				if err != nil {
+					return nil, fmt.Errorf("sshd 禁止 TCP 转发(%s),且原始模式不可用: %w", reason, err)
+				}
+				f.rf, f.dial = rf, rf.dial
+				f.Mode = "raw"
+			} else {
+				f.Mode = "std" // 运行中被拒时由 dialUpstream 热切换 raw
+			}
 		}
 	}
 	ln, err := net.Listen("tcp", f.listenAddr())
 	if err != nil {
+		if f.rf != nil {
+			f.rf.release() // 监听失败,归还已登记的复用通道引用
+		}
 		return nil, fmt.Errorf("监听 %s 失败: %w", f.listenAddr(), err)
 	}
 	f.ln = ln
@@ -170,6 +302,7 @@ func (s *Session) ListForwards() []Forward {
 			ID: f.ID, Type: f.Type, ListenPort: f.ListenPort,
 			RemoteHost: f.RemoteHost, RemotePort: f.RemotePort,
 			Namespace: f.Namespace, K8sTarget: f.K8sTarget, K8sPort: f.K8sPort,
+			Mode:      f.getMode(),
 			LastError: f.lastError(),
 			Stats: ForwardStats{
 				Active: f.activeN.Load(), Total: f.totalN.Load(),
@@ -193,8 +326,17 @@ func (f *Forward) acceptLoop() {
 
 func (f *Forward) stop() {
 	f.stopOnce.Do(func() {
+		f.stopping.Store(true)
 		if f.ln != nil {
 			f.ln.Close()
+		}
+		// 归还原始模式复用通道引用(非 nil 即持有一次引用计数)。
+		// 直用 rf 引用,不回查 Session(避免 s.mu 再入死锁)。
+		f.stateMu.Lock()
+		rf := f.rf
+		f.stateMu.Unlock()
+		if rf != nil {
+			rf.release()
 		}
 	})
 }
@@ -207,7 +349,7 @@ func (f *Forward) handle(conn net.Conn) {
 	}
 	if f.Type == "local" {
 		target := net.JoinHostPort(f.RemoteHost, strconv.Itoa(f.RemotePort))
-		upstream, err := f.sess.client.Dial("tcp", target)
+		upstream, err := f.dialUpstream("tcp", target)
 		if err != nil {
 			return
 		}
@@ -215,9 +357,8 @@ func (f *Forward) handle(conn net.Conn) {
 		proxy(conn, upstream)
 		return
 	}
-	socks5Serve(conn, func(network, addr string) (net.Conn, error) {
-		return f.sess.client.Dial(network, addr)
-	})
+	// socks5:协商与拨号解耦,拨号走 dialUpstream(auto 拒绝降级亦在此)。
+	socks5Serve(conn, f.dialUpstream)
 }
 
 // proxy 双向搬运,任一方向结束后关闭两侧连接。

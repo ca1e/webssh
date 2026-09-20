@@ -53,6 +53,10 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(testHome)
 	srv := exec.Command(bin, "-addr", testSSHAddr, "-user", "test", "-pass", "test123")
 	srv.Env = append(os.Environ(), "SHELL=/bin/bash", "HOME="+testHome)
+	// 工作目录一并隔离:SFTP getcwd 回到该目录(与真实 sshd 把 SFTP 服务
+	// 初始化到 $HOME 的行为一致),原始模式辅助程序的部署目录落在临时
+	// HOME 下,不污染仓库。
+	srv.Dir = testHome
 	srv.Stdout, srv.Stderr = os.Stdout, os.Stderr
 	if err := srv.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "启动 testssh 失败: %v\n", err)

@@ -22,6 +22,9 @@ type forwardReq struct {
 	ListenPort int    `json:"listen_port"`
 	RemoteHost string `json:"remote_host"`
 	RemotePort int    `json:"remote_port"`
+	// Mode 转发模式(仅 local/socks5):""=auto(探测 sshd,禁止即原始模式)
+	// | "std"=标准通道 | "raw"=原始模式(仅 SSH exec 通道,绕过转发禁令)
+	Mode string `json:"mode"`
 	// type=k8s:命名空间、kind/name 目标与服务端口(数字或端口名)
 	Namespace string `json:"namespace"`
 	K8sTarget string `json:"k8s_target"`
@@ -41,7 +44,8 @@ func (a *API) addForward(c *gin.Context) {
 	}
 	f, err := s.AddForward(req.Type, strings.TrimSpace(req.RemoteHost),
 		strings.TrimSpace(req.Namespace), strings.TrimSpace(req.K8sTarget),
-		strings.TrimSpace(req.K8sPort), req.ListenPort, req.RemotePort)
+		strings.TrimSpace(req.K8sPort), req.ListenPort, req.RemotePort,
+		strings.TrimSpace(req.Mode))
 	if err != nil {
 		fail(c, 400, err.Error())
 		return

@@ -1,11 +1,12 @@
 BINARY := webssh
 IMAGE := webssh:latest
 
-.PHONY: help frontend-build build run dev-backend dev-frontend dev test integration test-ssh-server clean docker-build docker-up docker-down docker-logs
+.PHONY: help frontend-build helper build run dev-backend dev-frontend dev test integration test-ssh-server clean docker-build docker-up docker-down docker-logs
 
 help:
 	@echo "frontend-build     构建前端(npm install + vite build)"
-	@echo "build              构建前端 + 编译单二进制 $(BINARY)"
+	@echo "helper             交叉编译原始模式转发辅助程序(linux amd64/arm64,内嵌用)"
+	@echo "build              构建前端 + 辅助程序 + 编译单二进制 $(BINARY)"
 	@echo "run                构建并运行(默认 127.0.0.1:8090)"
 	@echo "dev-backend        开发模式启动后端(go run,127.0.0.1:8090)"
 	@echo "dev-frontend       开发模式启动前端(vite,:5174,/api 代理到 127.0.0.1:8090)"
@@ -22,7 +23,16 @@ help:
 frontend-build:
 	cd frontend && npm install && npm run build
 
-build: frontend-build
+# helper 交叉编译远端辅助程序(tools/socks5-helper,仅标准库)并压缩为
+# 内嵌产物;产物随源码入库,使 go build/go test 开箱即用,修改 helper 后
+# 重新执行本目标即可(内容寻址命名,远端旧版自动失效)。
+helper:
+	for arch in amd64 arm64; do \
+		(cd tools/socks5-helper && GOOS=linux GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/socks5-helper-linux-$$arch .) && \
+		gzip -9 -n -f -c /tmp/socks5-helper-linux-$$arch > internal/sshmgr/rawhelper/socks5-helper-linux-$$arch.gz; \
+	done
+
+build: frontend-build helper
 	go build -trimpath -ldflags="-s -w" -o $(BINARY) .
 
 run: build

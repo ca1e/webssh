@@ -26,6 +26,10 @@ const forwardUnknown = computed(() => {
 
 const localForm = reactive({ listen_port: '', remote_host: '', remote_port: '' })
 const socksPort = ref('')
+// 转发模式:auto=探测 sshd 自动选择(禁止即原始模式),std=标准通道,
+// raw=原始模式(仅 SSH exec 通道,绕过 AllowTcpForwarding=no)
+const localMode = ref('auto')
+const socksMode = ref('auto')
 
 // ---------- K8s 服务转发(OpenLens 式:选资源 → 一键启动 → 活动/统计) ----------
 const k8sNs = ref('default')
@@ -171,6 +175,7 @@ async function addLocal() {
       listen_port: listen,
       remote_host: localForm.remote_host.trim(),
       remote_port: remotePort,
+      mode: localMode.value,
     })
     localForm.listen_port = ''
     localForm.remote_host = ''
@@ -185,7 +190,7 @@ async function addLocal() {
 async function addSocks() {
   try {
     const listen = toPort(socksPort.value, '监听端口')
-    await addForward(props.session.id, { type: 'socks5', listen_port: listen })
+    await addForward(props.session.id, { type: 'socks5', listen_port: listen, mode: socksMode.value })
     socksPort.value = ''
     ElMessage.success(`SOCKS5 代理已启动:127.0.0.1:${listen}`)
     refresh()
@@ -229,11 +234,11 @@ onUnmounted(() => clearInterval(pollTimer))
 
     <el-alert
       v-if="forwardDisabled"
-      type="error"
+      type="warning"
       :closable="false"
       style="flex: none"
     >
-      ⚠ 该主机 sshd 已禁止 TCP 转发(AllowTcpForwarding={{ sshConfig?.allow_tcp_forwarding || 'no' }}{{ sshConfig?.disable_forwarding === 'yes' ? ', DisableForwarding=yes' : '' }}),本地转发与 SOCKS5 将无法使用;下方的 K8s 服务转发不受影响。
+      ⚠ 该主机 sshd 已禁止 TCP 转发(AllowTcpForwarding={{ sshConfig?.allow_tcp_forwarding || 'no' }}{{ sshConfig?.disable_forwarding === 'yes' ? ', DisableForwarding=yes' : '' }}),标准转发不可用;选择「自动」或「原始」模式即可绕过该限制(经 SSH 通道转发),下方的 K8s 服务转发也不受影响。
     </el-alert>
     <el-alert
       v-else-if="forwardUnknown"
@@ -379,10 +384,18 @@ onUnmounted(() => clearInterval(pollTimer))
         <span class="muted">→</span>
         <el-input v-model="localForm.remote_host" placeholder="目标主机" style="width: 140px" />
         <el-input v-model="localForm.remote_port" placeholder="目标端口" />
+        <el-select v-model="localMode" style="width: 110px" title="auto:探测 sshd 自动选择;raw:原始模式,仅经 SSH 通道转发,绕过 AllowTcpForwarding=no">
+          <el-option label="自动" value="auto" />
+          <el-option label="标准" value="std" />
+          <el-option label="原始" value="raw" />
+        </el-select>
         <el-button type="primary" @click="addLocal">添加转发</el-button>
       </div>
       <div v-for="f in forwards.filter((x) => x.type === 'local')" :key="f.id" class="fwd-list-item">
-        <span>127.0.0.1:{{ f.listen_port }} → {{ f.remote_host }}:{{ f.remote_port }}</span>
+        <span>
+          127.0.0.1:{{ f.listen_port }} → {{ f.remote_host }}:{{ f.remote_port }}
+          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">原始</el-tag>
+        </span>
         <el-button size="small" type="danger" link @click="stop(f)">停止</el-button>
       </div>
       <div v-if="!forwards.some((x) => x.type === 'local')" class="muted" style="font-size: 12px">
@@ -394,10 +407,18 @@ onUnmounted(() => clearInterval(pollTimer))
       <template #header>SOCKS5 动态代理(ssh -D)</template>
       <div class="fwd-form">
         <el-input v-model="socksPort" placeholder="监听端口" />
+        <el-select v-model="socksMode" style="width: 110px" title="auto:探测 sshd 自动选择;raw:原始模式,仅经 SSH 通道转发,绕过 AllowTcpForwarding=no">
+          <el-option label="自动" value="auto" />
+          <el-option label="标准" value="std" />
+          <el-option label="原始" value="raw" />
+        </el-select>
         <el-button type="primary" @click="addSocks">启动代理</el-button>
       </div>
       <div v-for="f in forwards.filter((x) => x.type === 'socks5')" :key="f.id" class="fwd-list-item">
-        <span>SOCKS5 127.0.0.1:{{ f.listen_port }}</span>
+        <span>
+          SOCKS5 127.0.0.1:{{ f.listen_port }}
+          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">原始</el-tag>
+        </span>
         <el-button size="small" type="danger" link @click="stop(f)">停止</el-button>
       </div>
       <div v-if="!forwards.some((x) => x.type === 'socks5')" class="muted" style="font-size: 12px">

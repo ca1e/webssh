@@ -40,6 +40,9 @@ func main() {
 	addr := flag.String("addr", ":2222", "监听地址")
 	userName := flag.String("user", "test", "用户名")
 	pass := flag.String("pass", "test123", "密码")
+	// deny-forward 模拟 AllowTcpForwarding=no 的 sshd:拒绝 direct-tcpip
+	// 通道(administratively prohibited),用于验证自动降级原始模式。
+	denyForward := flag.Bool("deny-forward", false, "拒绝 direct-tcpip 转发通道")
 	flag.Parse()
 
 	signer, err := ssh.NewSignerFromKey(mustEd25519())
@@ -73,11 +76,11 @@ func main() {
 			log.Print(err)
 			continue
 		}
-		go handleConn(conn, config)
+		go handleConn(conn, config, *denyForward)
 	}
 }
 
-func handleConn(conn net.Conn, config *ssh.ServerConfig) {
+func handleConn(conn net.Conn, config *ssh.ServerConfig, denyForward bool) {
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		log.Print("握手失败: ", err)
@@ -94,6 +97,12 @@ func handleConn(conn net.Conn, config *ssh.ServerConfig) {
 			}
 			go handleSession(ch, chReqs)
 		case "direct-tcpip":
+			// -deny-forward 时按 AllowTcpForwarding=no 的语义拒绝
+			// (administratively prohibited),session 通道不受影响
+			if denyForward {
+				newChan.Reject(ssh.Prohibited, "administratively prohibited")
+				continue
+			}
 			// 支持 -L/-D/跳板机依赖的 TCP 转发通道
 			go handleDirectTCP(newChan)
 		default:

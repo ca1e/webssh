@@ -434,6 +434,10 @@ type Session struct {
 	forwards map[string]*Forward
 	fidSeq   int
 
+	// rawFwd 原始模式转发管理器(惰性创建,见 raw_forwarder.go):
+	// 该会话全部原始模式转发共用一条 exec 复用通道。
+	rawFwd *RawForwarder
+
 	mgr *Manager
 }
 
@@ -547,6 +551,11 @@ func (s *Session) Close() {
 		f.stop()
 	}
 	s.forwards = map[string]*Forward{}
+	s.mu.Unlock()
+	// 原始模式复用通道随会话一并回收(在关闭 SSH client 前,其 exec
+	// session 的关闭需要 client 存活)。
+	s.stopRawForwarder()
+	s.mu.Lock()
 	client, jump, conn := s.client, s.jumpClient, s.conn
 	extra := make([]*telnetConn, 0, len(s.telnetExtra))
 	for c := range s.telnetExtra {
