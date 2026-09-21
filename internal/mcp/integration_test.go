@@ -1,6 +1,6 @@
 //go:build integration
 
-// MCP 协议集成测试:拉起 cmd/testssh,经 go-sdk InMemory transports 对 12 个
+// MCP 协议集成测试:拉起 cmd/testssh,经 go-sdk InMemory transports 对 15 个
 // 工具逐个走 happy 路径(真会话/真 exec/真 SFTP),并做全量快照断言:
 // 任何输出不得包含凭据明文或 password/passphrase/PRIVATE KEY 词形。
 // 运行:go test -tags=integration ./internal/mcp/
@@ -135,7 +135,6 @@ func newITServer(t *testing.T) *Server {
 	return s
 }
 
-
 // 新开的 happy 快照:工具输出中的凭据明文(test123 与 hosts.json 的 b64 形态)。
 const (
 	itPass   = "test123"
@@ -156,10 +155,10 @@ func callHappy(t *testing.T, s *Server, tool string, args map[string]any) json.R
 	return blob
 }
 
-// TestIntegrationAllToolsHappy 12 工具全量 happy 路径(真 testssh)。
+// TestIntegrationAllToolsHappy 15 工具全量 happy 路径(真 testssh)。
 func TestIntegrationAllToolsHappy(t *testing.T) {
 	s := newITServer(t)
-	// 工具面数量回归:默认全开 = 12
+	// 工具面数量回归:默认全开 = 15
 	serverConn, clientConn := mcp.NewInMemoryTransports()
 	sc, err := s.currentServer().Connect(context.Background(), serverConn, nil)
 	if err != nil {
@@ -176,8 +175,8 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 12 {
-		t.Fatalf("tools/list = %d, want 12", len(list.Tools))
+	if len(list.Tools) != 15 {
+		t.Fatalf("tools/list = %d, want 15", len(list.Tools))
 	}
 
 	ctx := context.Background()
@@ -188,6 +187,22 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 	h := callHappy(t, s, "ssh_test_connection", map[string]any{"host": "it-host"})
 	if !strings.Contains(string(h), `"ok":true`) {
 		t.Fatalf("test_connection = %s", h)
+	}
+
+	// hosts 写域:create(口令认证)→ duplicate → delete;输出经快照断言。
+	c := callHappy(t, s, "ssh_create_host", map[string]any{
+		"name": "it-created", "host": "203.0.113.77", "username": "t",
+		"auth_type": "password", "password": "unit-tmp-pw",
+	})
+	if !strings.Contains(string(c), `"name":"it-created"`) || !strings.Contains(string(c), `"auth":"secret"`) {
+		t.Fatalf("create_host = %s", c)
+	}
+	dc := callHappy(t, s, "ssh_duplicate_host", map[string]any{"host": "it-created"})
+	if !strings.Contains(string(dc), `"name":"it-created - copy"`) {
+		t.Fatalf("duplicate_host = %s", dc)
+	}
+	for _, n := range []string{"it-created", "it-created - copy"} {
+		callHappy(t, s, "ssh_delete_host", map[string]any{"host": n, "confirm": true})
 	}
 
 	// exec 域

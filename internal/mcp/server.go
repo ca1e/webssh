@@ -1,5 +1,6 @@
 // Package webssh MCP 服务:把现有 SSH 管理能力封装为工具集。
-// 核心不变式:Agent 永不接触密码/私钥。ssh_exec 接受任意命令字符串,
+// 核心不变式:凭据只进不出——ssh_create_host 可提交凭据明文(入库即加密,
+// 永不回显);其余任何工具输出都不含凭据。ssh_exec 接受任意命令字符串,
 // 超时/输出上限/下载上限由 mcp.json 控制。
 //
 // 装配:mcp.NewServer + 官方 go-sdk Streamable HTTP 挂 gin /mcp;
@@ -257,6 +258,26 @@ func (s *Server) hostVisible(h store.Host) bool {
 	return false
 }
 
+// visibleGateOn 可见主机开关是否开启。
+func (s *Server) visibleGateOn() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.conf.VisibleHosts.Enabled
+}
+
+// addVisibleHost 开关开启时把新主机 ID 加入可见名单并持久化热生效
+// (UpdateSettings 重写 mcp.json + Reload);关闭时为无操作。名单外新主机
+// 对 MCP 全部工具按"不存在"处理,create/duplicate 必须随建随加,否则刚写
+// 下的配置立即不可管理(连回删都做不到)。失败由调用方回滚新建。
+func (s *Server) addVisibleHost(id string) error {
+	if !s.visibleGateOn() {
+		return nil
+	}
+	set := s.Settings()
+	set.VisibleHosts.IDs = append(set.VisibleHosts.IDs, id)
+	return s.UpdateSettings(set)
+}
+
 // whitelistNote 白名单开启时追加到工具描述,让 Agent 提前知晓约束。
 func whitelistNote(guard *pathguard.Guard) string {
 	if !guard.Enabled() {
@@ -295,6 +316,24 @@ func (s *Server) buildTools(cfg *Config, guard *pathguard.Guard) *mcp.Server {
 				Name:        "ssh_test_connection",
 				Description: "拨号+认证+host key 校验验证主机可达性,不保留连接。",
 			}, s.toolTestConnection)
+		}
+		if allowed("ssh_create_host") {
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "ssh_create_host",
+				Description: "新建 SSH 主机配置(仅 SSH;telnet 请走 Web 端)。auth_type=password 需提交口令明文、key 需提交服务端私钥路径;凭据只进不出,返回为脱敏投影。可见主机开关开启时,新主机会自动加入可见名单。",
+			}, s.toolCreateHost)
+		}
+		if allowed("ssh_duplicate_host") {
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "ssh_duplicate_host",
+				Description: "复制主机为新配置(凭据引用与源共享同一条加密记录);名称可选,默认 \"源名 - copy\"。可见主机开关开启时,副本会自动加入可见名单。",
+			}, s.toolDuplicateHost)
+		}
+		if allowed("ssh_delete_host") {
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "ssh_delete_host",
+				Description: "按名称或 ID 删除主机(不可逆;须 confirm=true)。仍被其他主机用作跳板时拒删。",
+			}, s.toolDeleteHost)
 		}
 	}
 	if cfg.Domains["exec"] {

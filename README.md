@@ -11,13 +11,16 @@ Web 前端 SSH 管理工具(Go + Vue3 单二进制部署)。
 - **主机详情**:静态信息采集与实时指标(5s),Docker 容器列表 / 详情 / 日志流 / 容器内 shell;容器 ID 统一白名单清洗 + shell 转义。
 - **代理 / 转发**:本地端口转发(`-L`)、SOCKS5 动态代理(`-D`),均只监听 127.0.0.1;跳板机在连接配置中指定。支持三种模式:**标准**(direct-tcpip / tcpip-forward)、**原始模式**(sshd `AllowTcpForwarding=no` 时的绕行方案):仅开一条 SSH exec 通道,在远端运行内嵌的辅助程序(静态编译,amd64/arm64,经 SFTP 或 base64 自动上传、内容寻址缓存、不监听任何端口),多条隧道连接在该通道上多路复用;「自动」模式先探测 sshd 配置,禁止时直接落原始模式,运行中被拒也会原地热切换。另支持 **K8s 服务端口转发**(OpenLens 式交互):选命名空间 → 列出 Service/Pod 及其端口 → 点击端口一键启动,本地端口自动分配,活动列表实时展示连接数与收发流量;亦支持手动添加(命名端口/其他资源类型/指定本地端口)。面向 sshd 禁止 TCP 转发(`AllowTcpForwarding=no`)但部署了 Kubernetes 的主机:流量经 SSH exec 通道在远端由 `kubectl port-forward` 桥接到 Service/Pod——远端只依赖 kubectl(无需 nc/socat),本机纯 Go 实现、跨平台零依赖。
 - **K8s 面板**(借鉴 Freelens 的无 Agent 架构):工具栏打开,面向远端装有 kubectl 的主机。**集群状态**:单次 exec 探测当前 context / 集群名 / API Server / 服务端版本 / 节点就绪数,自动识别发行版(EKS/GKE/AKS/OpenShift/K3s/Kind/Minikube),结果按会话缓存(成功 60s / 失败 10s,支持强制刷新)。**Pod 列表**:经 `kubectl get pods -w --output-watch-events -o json` 的 WebSocket 事件流实时增量更新(List 快照全量替换 + ADDED/MODIFIED/DELETED 事件),支持全部命名空间(`-A`)或指定命名空间、名称过滤,断线 3s 自动重连并重新拉快照;kubectl 失败(RBAC/集群不可达)以错误事件透出。行操作:日志(`kubectl logs -f --tail N` 实时流,复用日志面板)与终端(`kubectl exec -it` 交互 PTY,仅 Running 的 Pod;bash 优先回退 sh,支持窗口 resize),以独立标签页打开、可刷新恢复。kubectl 定位统一走 PATH 直查 + 登录环境回退;动态参数一律 RFC 1123 白名单校验 + 单引号转义。
-- **MCP Server**(AI Agent 接入,docs/mcp-design.md):把 SSH 管理能力封装为 **12 个工具**,经 Streamable HTTP 暴露在 `/mcp`,与 Web 端共享同一会话层/主机配置。核心不变式:**Agent 永不接触密码/私钥**;telnet 主机一律拒绝。`ssh_exec` 接受任意命令字符串(超时/输出上限可配)。**可选约束**(默认全关,Web 设置 → MCP 页管理,保存即热生效):**路径白名单**(exec 命令内路径与下载路径须落在前缀内,含符号链接逃逸防护)、**可见主机**(按分组/单台勾选,未勾选主机对 MCP 完全不可见)、**工具权限**(显式白名单,默认列出全部工具,清空即不暴露任何工具)。工具一览:
+- **MCP Server**(AI Agent 接入,docs/mcp-design.md):把 SSH 管理能力封装为 **15 个工具**,经 Streamable HTTP 暴露在 `/mcp`,与 Web 端共享同一会话层/主机配置。核心不变式:**凭据只进不出**(Agent 可在新建主机时提交凭据明文,入库即加密;任何输出/日志永不回显);telnet 主机一律拒绝。`ssh_exec` 接受任意命令字符串(超时/输出上限可配)。**可选约束**(默认全关,Web 设置 → MCP 页管理,保存即热生效):**路径白名单**(exec 命令内路径与下载路径须落在前缀内,含符号链接逃逸防护)、**可见主机**(按分组/单台勾选,未勾选主机对 MCP 完全不可见)、**工具权限**(显式白名单,默认列出全部工具,清空即不暴露任何工具)。工具一览:
 
   | 工具 | 域 | 说明 |
   | --- | --- | --- |
   | `ssh_list_hosts` | hosts | 主机元数据(脱敏投影,无凭据) |
   | `ssh_host_info` | hosts | 单主机配置详情(同上口径) |
   | `ssh_test_connection` | hosts | 拨号+认证+host key 校验,不留连接 |
+  | `ssh_create_host` | hosts | 新建 SSH 主机(口令/私钥认证;凭据入参即加密,输出脱敏;可见主机开关开启时自动入名单) |
+  | `ssh_duplicate_host` | hosts | 复制主机(凭据引用与源共享;名称可选;副本自动入可见名单) |
+  | `ssh_delete_host` | hosts | 删除主机(confirm=true 二次确认;被用作跳板时拒删) |
   | `ssh_exec` | exec | 任意命令执行,返回 stdout/stderr/exit_code(唯一执行入口) |
   | `ssh_system_info` | monitor | 静态主机信息 |
   | `ssh_cpu_memory` | monitor | CPU/内存采样 |

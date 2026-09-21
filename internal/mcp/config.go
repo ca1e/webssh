@@ -45,6 +45,7 @@ type ToolFilterCfg struct {
 // allToolNames 全部工具名(config 校验与设置页目录共用)。
 var allToolNames = []string{
 	"ssh_list_hosts", "ssh_host_info", "ssh_test_connection",
+	"ssh_create_host", "ssh_duplicate_host", "ssh_delete_host",
 	"ssh_exec", "ssh_download_file",
 	"ssh_system_info", "ssh_cpu_memory", "ssh_disk_usage",
 	"ssh_network_status", "ssh_service_status", "ssh_docker_status", "ssh_k8s_status",
@@ -79,7 +80,7 @@ type rawConfig struct {
 		ExecTimeout      string `json:"exec_timeout"`
 		ReadMaxBytes     *int64 `json:"read_max_bytes"`
 		DownloadMaxBytes *int64 `json:"download_max_bytes"`
-		PathWhitelist *struct {
+		PathWhitelist    *struct {
 			Enabled *bool     `json:"enabled"`
 			Paths   *[]string `json:"paths"`
 		} `json:"path_whitelist"`

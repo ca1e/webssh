@@ -172,7 +172,7 @@ func callTool(t *testing.T, s *Server, name string, args map[string]any) (string
 	return text.String(), structured, res.IsError
 }
 
-func TestToolsListExactlyTwelve(t *testing.T) {
+func TestToolsListFullSurface(t *testing.T) {
 	s := newFixture(t, "")
 	serverConn, clientConn := mcp.NewInMemoryTransports()
 	sc, err := s.currentServer().Connect(context.Background(), serverConn, nil)
@@ -194,17 +194,10 @@ func TestToolsListExactlyTwelve(t *testing.T) {
 	for _, tl := range res.Tools {
 		got[tl.Name] = true
 	}
-	want := []string{
-		"ssh_list_hosts", "ssh_host_info", "ssh_test_connection",
-		"ssh_exec",
-		"ssh_system_info", "ssh_cpu_memory", "ssh_disk_usage",
-		"ssh_network_status", "ssh_service_status", "ssh_docker_status", "ssh_k8s_status",
-		"ssh_download_file",
+	if len(got) != len(allToolNames) {
+		t.Fatalf("工具数 = %d, want %d: %v", len(got), len(allToolNames), got)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("工具数 = %d, want 12: %v", len(got), got)
-	}
-	for _, w := range want {
+	for _, w := range allToolNames {
 		if !got[w] {
 			t.Fatalf("缺少工具 %s;实际: %v", w, got)
 		}
@@ -227,6 +220,11 @@ func TestDenyPaths(t *testing.T) {
 		{"telnet 主机", "ssh_exec", map[string]any{"host": "con1", "command": "uptime"}, []string{"仅 SSH 主机支持"}},
 		{"空命令", "ssh_exec", map[string]any{"host": "box1", "command": "  "}, []string{"缺少 command"}},
 		{"相对路径", "ssh_download_file", map[string]any{"host": "box1", "path": "relative/file"}, []string{"绝对路径"}},
+		{"新建缺凭据", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "password"}, []string{"口令认证必须提交"}},
+		{"新建缺私钥", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "key"}, []string{"key_path"}},
+		{"新建坏认证", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "none"}, []string{"auth_type 非法"}},
+		{"删除未确认", "ssh_delete_host", map[string]any{"host": "box1"}, []string{"confirm=true"}},
+		{"复制未知主机", "ssh_duplicate_host", map[string]any{"host": "ghost"}, []string{"不存在"}},
 	}
 	for _, c := range denies {
 		text, _, isErr := callTool(t, s, c.tool, c.args)
@@ -265,6 +263,144 @@ func TestHostsToolsSnapshotZeroSecrets(t *testing.T) {
 		if secretPattern.MatchString(string(blob)) {
 			t.Fatalf("%s 输出命中凭据模式: %s", c.tool, blob)
 		}
+	}
+}
+
+// TestHostWriteLifecycle create → duplicate → delete 全链路(单元,无真连接):
+// 验证脱敏投影、凭据只进不出(提交的明文不回显、跳板引用解析、下游引用拒删)。
+func TestHostWriteLifecycle(t *testing.T) {
+	s := newFixture(t, "")
+
+	// create(口令认证):提交的明文经同一 secretPattern 断言不得回显。
+	text, out, isErr := callTool(t, s, "ssh_create_host", map[string]any{
+		"name": "newbox", "host": "203.0.113.99", "username": "ops",
+		"auth_type": "password", "password": testSecret, "group": "g1",
+	})
+	if isErr {
+		t.Fatalf("create 失败: %s", text)
+	}
+	blob, _ := json.Marshal(out)
+	if secretPattern.MatchString(string(blob)) {
+		t.Fatalf("create 输出命中凭据模式: %s", blob)
+	}
+	var created struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Auth      string `json:"auth"`
+		HasSecret bool   `json:"has_secret"`
+	}
+	if err := json.Unmarshal(blob, &created); err != nil || created.ID == "" ||
+		created.Name != "newbox" || created.Auth != "secret" || !created.HasSecret {
+		t.Fatalf("create 投影不符: %s err=%v", blob, err)
+	}
+
+	// create(key 认证 + jump 名称解析为 ID)。
+	text, out, isErr = callTool(t, s, "ssh_create_host", map[string]any{
+		"name": "jumpbox", "host": "203.0.113.88", "username": "ops",
+		"auth_type": "key", "key_path": "~/.ssh/id_ed25519", "jump": "newbox",
+	})
+	if isErr {
+		t.Fatalf("create(jump) 失败: %s", text)
+	}
+	blob, _ = json.Marshal(out)
+	if !strings.Contains(string(blob), `"jump_id":"`+created.ID+`"`) {
+		t.Fatalf("jump 名称未解析为 ID: %s", blob)
+	}
+
+	// duplicate:默认新名 + 凭据引用共享(脱敏投影同为 secret 型)。
+	text, out, isErr = callTool(t, s, "ssh_duplicate_host", map[string]any{"host": "newbox"})
+	if isErr {
+		t.Fatalf("duplicate 失败: %s", text)
+	}
+	blob, _ = json.Marshal(out)
+	if !strings.Contains(string(blob), `"name":"newbox - copy"`) {
+		t.Fatalf("duplicate 缺省名不符: %s", blob)
+	}
+	var dup struct {
+		ID   string `json:"id"`
+		Auth string `json:"auth"`
+	}
+	_ = json.Unmarshal(blob, &dup)
+	if dup.ID == created.ID || dup.Auth != "secret" {
+		t.Fatalf("duplicate 应为新 ID 且共享凭据形态: %s", blob)
+	}
+	// 源主机仍被副本引用? 副本无 jump,不受影响;delete 源 newbox 被 jumpbox 引用 → 拒删。
+	text, _, isErr = callTool(t, s, "ssh_delete_host", map[string]any{"host": "newbox", "confirm": true})
+	if !isErr || !strings.Contains(text, "跳板机") {
+		t.Fatalf("被跳板引用的主机应拒删: %q isErr=%v", text, isErr)
+	}
+
+	// delete:先删 jumpbox,再删 newbox;删后 list 不再可见。
+	for _, name := range []string{"jumpbox", "newbox", "newbox - copy"} {
+		text, _, isErr = callTool(t, s, "ssh_delete_host", map[string]any{"host": name, "confirm": true})
+		if isErr {
+			t.Fatalf("delete %s 失败: %s", name, text)
+		}
+	}
+	text, out, isErr = callTool(t, s, "ssh_list_hosts", nil)
+	if isErr {
+		t.Fatalf("list 失败: %s", text)
+	}
+	blob, _ = json.Marshal(out)
+	for _, gone := range []string{"newbox", "jumpbox"} {
+		if strings.Contains(string(blob), `"`+gone+`"`) {
+			t.Fatalf("删除后仍在列表: %s -> %s", gone, blob)
+		}
+	}
+}
+
+// TestWriteToolsAutoVisible 可见主机开关开启时:create/duplicate 产出的新主机
+// 自动加入名单并保持既有成员;开关关闭时为无操作(不影响 mcp.json)。
+func TestWriteToolsAutoVisible(t *testing.T) {
+	s := newFixture(t, `{"visible_hosts":{"enabled":true,"ids":["keep-me"]}}`)
+	// box1 不在名单内:先验证基线不可见,再走 create→duplicate。
+	if _, structured, isErr := callTool(t, s, "ssh_list_hosts", nil); isErr {
+		t.Fatalf("list 失败: %v", structured)
+	} else {
+		blob, _ := json.Marshal(structured)
+		if strings.Contains(string(blob), "box1") {
+			t.Fatalf("开关开启时 box1 不应可见: %s", blob)
+		}
+	}
+	_, out, isErr := callTool(t, s, "ssh_create_host", map[string]any{
+		"name": "auto1", "host": "203.0.113.55", "username": "ops",
+		"auth_type": "key", "key_path": "/srv/keys/id_auto",
+	})
+	if isErr {
+		t.Fatalf("create 失败: %v", out)
+	}
+	blob, _ := json.Marshal(out)
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(blob, &created)
+	if created.ID == "" {
+		t.Fatalf("create 无 ID: %s", blob)
+	}
+	if _, out, isErr = callTool(t, s, "ssh_host_info", map[string]any{"host": "auto1"}); isErr {
+		t.Fatalf("新主机应立即可见: %v", out)
+	}
+	if _, out, isErr = callTool(t, s, "ssh_duplicate_host", map[string]any{"host": "auto1"}); isErr {
+		t.Fatalf("duplicate 失败: %v", out)
+	}
+	// 名单:keep-me 保留,auto1 与副本均在。
+	set := s.Settings()
+	if !set.VisibleHosts.Enabled {
+		t.Fatal("开关被意外关闭")
+	}
+	for _, want := range []string{"keep-me", created.ID} {
+		found := false
+		for _, id := range set.VisibleHosts.IDs {
+			if id == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("名单缺 %s: %v", want, set.VisibleHosts.IDs)
+		}
+	}
+	if len(set.VisibleHosts.IDs) != 3 {
+		t.Fatalf("名单应恰为 keep-me + auto1 + 副本: %v", set.VisibleHosts.IDs)
 	}
 }
 

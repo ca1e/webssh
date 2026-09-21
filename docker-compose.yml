@@ -3,6 +3,8 @@ services:
   webssh:
     build: .
     image: webssh:latest
+    # 只允许本地构建,禁止 compose 联网 pull webssh:latest(镜像不存在也不会去远程拉)
+    pull_policy: build
     container_name: webssh
     restart: unless-stopped
     # 宿主网络:容器直接占用宿主机端口,无需 ports 映射;
