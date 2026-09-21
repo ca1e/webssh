@@ -11,22 +11,24 @@ import (
 	"webssh/internal/auth"
 	"webssh/internal/config"
 	"webssh/internal/k8smgr"
+	"webssh/internal/mcp"
 	"webssh/internal/sshmgr"
 	"webssh/internal/store"
 	"webssh/internal/transfer"
 )
 
 type API struct {
-	cfg  *config.Config
-	st   *store.Store
-	mgr  *sshmgr.Manager
-	tr   *transfer.Manager
-	auth *auth.Store
-	k8s  *k8smgr.Manager
+	cfg    *config.Config
+	st     *store.Store
+	mgr    *sshmgr.Manager
+	tr     *transfer.Manager
+	auth   *auth.Store
+	k8s    *k8smgr.Manager
+	mcpSrv *mcp.Server
 }
 
-func NewAPI(cfg *config.Config, st *store.Store, mgr *sshmgr.Manager, tr *transfer.Manager, auth *auth.Store) *API {
-	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr, auth: auth, k8s: k8smgr.New()}
+func NewAPI(cfg *config.Config, st *store.Store, mgr *sshmgr.Manager, tr *transfer.Manager, auth *auth.Store, mcpSrv *mcp.Server) *API {
+	return &API{cfg: cfg, st: st, mgr: mgr, tr: tr, auth: auth, k8s: k8smgr.New(), mcpSrv: mcpSrv}
 }
 
 func fail(c *gin.Context, code int, msg string) {
@@ -59,9 +61,13 @@ func (a *API) Register(r gin.IRouter) {
 	r.DELETE("/api/hosts/:id", a.deleteHost)
 	r.POST("/api/hosts/:id/duplicate", a.duplicateHost)
 	r.POST("/api/hosts/test", a.testHost)
-	r.GET("/api/hosts/export", a.exportHosts)
+	r.POST("/api/hosts/export", a.exportHosts)
 	r.POST("/api/hosts/import", a.importHosts)
 	r.GET("/api/keys", a.listKeys)
+
+	// MCP 设置(路径白名单)
+	r.GET("/api/mcp/settings", a.getMcpSettings)
+	r.PUT("/api/mcp/settings", a.putMcpSettings)
 
 	// 会话
 	r.GET("/api/sessions", a.listSessions)

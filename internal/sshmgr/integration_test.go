@@ -17,10 +17,18 @@ import (
 	"testing"
 	"time"
 
+	"webssh/internal/secrets"
 	"webssh/internal/store"
 )
 
 var testSSHAddr string
+
+// itSec 集成测试包级凭据库:所有 Manager 经 newITManager 注入其 Reveal,
+// 测试主机引用 itPwRef(test123)。与生产装配同路径:store.Host 只持引用。
+var (
+	itSec   *secrets.Store
+	itPwRef string
+)
 
 func TestMain(m *testing.M) {
 	// 编译 cmd/testssh 为临时二进制(测试无需 shell 命令行协调)
@@ -51,6 +59,24 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	defer os.RemoveAll(testHome)
+
+	// 包级凭据库 + 测试密码引用(目录同样隔离在临时区)
+	secDir, err := os.MkdirTemp("", "webssh-it-secrets")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建凭据目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(secDir)
+	itSec, err = secrets.Open(secDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "打开测试凭据库失败: %v\n", err)
+		os.Exit(1)
+	}
+	itPwRef, err = itSec.Put("", secrets.KindPassword, "test123")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "写入测试密码失败: %v\n", err)
+		os.Exit(1)
+	}
 	srv := exec.Command(bin, "-addr", testSSHAddr, "-user", "test", "-pass", "test123")
 	srv.Env = append(os.Environ(), "SHELL=/bin/bash", "HOME="+testHome)
 	// 工作目录一并隔离:SFTP getcwd 回到该目录(与真实 sshd 把 SFTP 服务
@@ -96,6 +122,14 @@ func moduleRoot() string {
 	return filepath.Dir(filepath.Dir(wd))
 }
 
+// newITManager 创建接入凭据库的测试 Manager(替代 New(t.TempDir(), n, g))。
+func newITManager(t *testing.T, maxSessions int) *Manager {
+	t.Helper()
+	m := New(t.TempDir(), maxSessions, 0) // grace=0:测试内关闭孤儿回收
+	m.SetSecretResolver(itSec.Reveal)
+	return m
+}
+
 // openTestSession 建立到 testssh 的会话(test/test123,TOFU 信任新密钥)。
 func openTestSession(t *testing.T, mgr *Manager) *Session {
 	t.Helper()
@@ -106,7 +140,7 @@ func openTestSession(t *testing.T, mgr *Manager) *Session {
 	// FollowSSHPath:终端用例依赖注入的 OSC 7 钩子(cwd 跟踪/启动命令)
 	host := store.Host{
 		Name: "it-host", Host: "127.0.0.1", Port: port,
-		Username: "test", AuthType: store.AuthPassword, Password: "test123",
+		Username: "test", AuthType: store.AuthPassword, PasswordRef: itPwRef,
 		FollowSSHPath: true,
 	}
 	s, err := mgr.OpenSession(context.Background(), host, nil, true)
@@ -127,7 +161,7 @@ func openPlainSession(t *testing.T, mgr *Manager) *Session {
 func TestIntegrationTerminalPlainDefault(t *testing.T) {
 	// 默认(未勾选 FollowSSHPath)= 普通连接:终端无任何注入,
 	// 即使执行 cd 也不产生 OSC 7,更无钩子行回显
-	s := openPlainSession(t, New(t.TempDir(), 8, 0))
+	s := openPlainSession(t, newITManager(t, 8))
 	term, err := s.NewTerminal(80, 24, "")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -160,7 +194,7 @@ func TestIntegrationTerminalPlainDefault(t *testing.T) {
 }
 
 func TestIntegrationRunExec(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8, 0))
+	s := openTestSession(t, newITManager(t, 8))
 	out, err := s.Run("echo hello-webssh")
 	if err != nil {
 		t.Fatalf("Run 失败: %v", err)
@@ -171,7 +205,7 @@ func TestIntegrationRunExec(t *testing.T) {
 }
 
 func TestIntegrationTerminalCwdTracking(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8, 0))
+	s := openTestSession(t, newITManager(t, 8))
 	term, err := s.NewTerminal(80, 24, "")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -200,7 +234,7 @@ func TestIntegrationTerminalCwdTracking(t *testing.T) {
 }
 
 func TestIntegrationTerminalStartupCmd(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8, 0))
+	s := openTestSession(t, newITManager(t, 8))
 	term, err := s.NewTerminal(80, 24, "echo STARTUP_MARKER_$((40+2))")
 	if err != nil {
 		t.Fatalf("NewTerminal 失败: %v", err)
@@ -227,7 +261,7 @@ func TestIntegrationTerminalStartupCmd(t *testing.T) {
 }
 
 func TestIntegrationSftpRoundtrip(t *testing.T) {
-	s := openTestSession(t, New(t.TempDir(), 8, 0))
+	s := openTestSession(t, newITManager(t, 8))
 	sc, err := s.SFTP()
 	if err != nil {
 		t.Fatalf("SFTP 不可用: %v", err)
@@ -266,14 +300,100 @@ func TestIntegrationSftpRoundtrip(t *testing.T) {
 }
 
 func TestIntegrationSessionLimit(t *testing.T) {
-	mgr := New(t.TempDir(), 1, 0)
+	mgr := newITManager(t, 1)
 	s := openTestSession(t, mgr) // 占满唯一额度
 	_ = s
 	_, err := mgr.OpenSession(context.Background(), store.Host{
 		Host: "127.0.0.1", Port: 22, Username: "test",
-		AuthType: store.AuthPassword, Password: "test123",
+		AuthType: store.AuthPassword, PasswordRef: itPwRef,
 	}, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "上限") {
 		t.Fatalf("超限应报上限错误,得到: %v", err)
 	}
+}
+
+// ---------- RunExec 分离式 exec 通道 ----------
+
+// 退出码提取 + stdout/stderr 分流(testssh exec 已把 stderr 走扩展数据)。
+func TestIntegrationRunExecSeparation(t *testing.T) {
+	s := openTestSession(t, newITManager(t, 8))
+	res, err := s.RunExec(context.Background(), "echo out-line; echo err-line >&2; exit 7", 1<<20)
+	if err != nil {
+		t.Fatalf("RunExec 失败: %v", err)
+	}
+	if res.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", res.ExitCode)
+	}
+	if strings.TrimSpace(res.Stdout) != "out-line" {
+		t.Fatalf("Stdout = %q, want out-line", res.Stdout)
+	}
+	if strings.TrimSpace(res.Stderr) != "err-line" {
+		t.Fatalf("Stderr = %q, want err-line(未分离?)", res.Stderr)
+	}
+	if res.Truncated {
+		t.Fatal("未超限不应置 Truncated")
+	}
+}
+
+// ctx 超时:远端进程被截杀,RunExec 及时返回错误(不挂满 sleep 时长)。
+func TestIntegrationRunExecTimeout(t *testing.T) {
+	s := openTestSession(t, newITManager(t, 8))
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := s.RunExec(ctx, "sleep 30", 1<<20)
+	if err == nil {
+		t.Fatal("超时应返回错误")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("截杀不及时: %v", elapsed)
+	}
+}
+
+// 输出超限:截断到 limit 并置 Truncated。
+func TestIntegrationRunExecTruncated(t *testing.T) {
+	s := openTestSession(t, newITManager(t, 8))
+	res, err := s.RunExec(context.Background(), "head -c 4096 /dev/zero | tr '\\0' 'x'", 64)
+	if err != nil {
+		t.Fatalf("RunExec 失败: %v", err)
+	}
+	if !res.Truncated {
+		t.Fatal("超限应置 Truncated")
+	}
+	if int64(len(res.Stdout)) != 64 {
+		t.Fatalf("Stdout 长度 = %d, want 64", len(res.Stdout))
+	}
+}
+
+// telnet 会话不支持 exec:与 Run 同语义返回 ErrSSHOnly。
+func TestIntegrationRunExecTelnetRejected(t *testing.T) {
+	m := New(t.TempDir(), 8, 0)
+	s := &Session{ID: "t", connType: store.ConnTelnet, mgr: m}
+	if _, err := s.RunExec(context.Background(), "x", 1024); err != ErrSSHOnly {
+		t.Fatalf("telnet 会话应返回 ErrSSHOnly,得到 %v", err)
+	}
+}
+
+// 租约防收割(真会话 + 短宽限期):AcquireLease 期内不被回收,
+// ReleaseLease 归零后宽限期到即回收。
+func TestIntegrationLeaseAgainstReap(t *testing.T) {
+	m := New(t.TempDir(), 8, 300*time.Millisecond)
+	m.SetSecretResolver(itSec.Reveal)
+	s := openTestSession(t, m)
+	if err := s.AcquireLease(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if _, ok := m.Get(s.ID); !ok {
+		t.Fatal("租约期内会话被回收")
+	}
+	s.ReleaseLease()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := m.Get(s.ID); !ok {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("ReleaseLease 后宽限期到仍未回收")
 }

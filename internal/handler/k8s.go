@@ -2,11 +2,11 @@ package handler
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"webssh/internal/opsview"
 	"webssh/internal/sshmgr"
 )
 
@@ -36,7 +36,9 @@ emit() {
   fi
 }`
 
-var k8sSectionRe = regexp.MustCompile(`(?s)__WS_(\w+)_(OK|ERR)__\n(.*?)\n?__WS_END__`)
+// k8sSectionRe 与 dockerInfoScript 共用的 __WS_*__ 分段协议正则(定义在
+// opsview,避免协议分叉)。
+var k8sSectionRe = opsview.SectionRe
 
 type k8sPort struct {
 	Port string `json:"port"` // 数字或端口名,原样透传给 port-forward

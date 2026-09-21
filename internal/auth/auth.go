@@ -61,6 +61,17 @@ func (s *Store) HasPassword() bool {
 	return s.state.PasswordHash != ""
 }
 
+// MatchesPassword 仅校验密码、不签发令牌(与 Verify 的差异:不产生副作用)。
+// 供 MCP Bearer 回落到锁屏密码的认证路径使用;bcrypt 比对本身即安全比较。
+func (s *Store) MatchesPassword(pw string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.PasswordHash == "" {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(s.state.PasswordHash), []byte(pw)) == nil
+}
+
 // SetPassword 首次设置启动密码,成功后签发新 token。
 func (s *Store) SetPassword(pw string) (string, time.Time, error) {
 	s.mu.Lock()

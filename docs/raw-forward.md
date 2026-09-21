@@ -68,20 +68,19 @@ sshd 以 `administratively prohibited` 拒绝。
 | `internal/sshmgr/rawhelper/*.gz` | 内嵌产物(linux amd64/arm64,`make helper` 产出) |
 | `internal/sshmgr/rawhelper.go` | 架构探测、上传(SFTP/base64)、缓存校验 |
 | `internal/sshmgr/raw_forwarder.go` | RawForwarder 复用通道、rawConn(net.Conn 适配)、帧协议 |
-| `internal/sshmgr/forwards.go` | Forward 增 `Mode` 字段(std/raw)、模式裁决、auto 热切换 |
-| `internal/handler/forwards.go` | API `POST /api/sessions/:id/forwards` 增 `mode` 参数 |
+| `internal/sshmgr/forwards.go` | Forward 的 `Mode` 字段(std/raw)、模式裁决、auto 热切换 |
+| `internal/handler/forwards.go` | API `POST /api/sessions/:id/forwards` 的 `mode` 参数 |
 
-标准转发路径(`mode=std`、k8s 转发、既有行为)完全未变。
+标准转发路径(`mode=std`)与 K8s 转发不经 RawForwarder。
 
-## 前端改动说明
+## 前端
 
 `frontend/src/components/ForwardPanel.vue`:
 
-- 「本地端口转发」与「SOCKS5 动态代理」表单各加一个模式下拉:
-  **自动**(默认)/ **标准** / **原始**;请求体新增 `mode` 字段。
+- 「本地端口转发」与「SOCKS5 动态代理」表单各有一个模式下拉:
+  **自动**(默认)/ **标准** / **原始**;请求体携带 `mode` 字段。
 - 转发列表中原始模式条目显示「原始」标签(`f.mode === 'raw'`)。
-- sshd 禁止转发的告警从 error 改为 warning,并提示改用自动/原始模式。
-- 其余(统计轮询、K8s 面板)不变。
+- sshd 禁止转发的告警以 warning 呈现,并提示改用自动/原始模式。
 
 ## 部署
 

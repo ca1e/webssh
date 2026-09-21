@@ -100,3 +100,34 @@ func TestZeroGraceDisablesReap(t *testing.T) {
 		t.Fatal("宽限期为 0 时不应回收任何会话")
 	}
 }
+
+// MCP 调用租约:Acquire 阻止宽限期回收,Release 归零后重新计时。
+func TestLeaseBlocksReap(t *testing.T) {
+	m, s := newOrphanFixture(30 * time.Millisecond)
+	if err := s.AcquireLease(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if !alive(m, s.ID) {
+		t.Fatal("租约未归零期间会话被回收")
+	}
+	s.ReleaseLease()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !alive(m, s.ID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("ReleaseLease 后宽限期到仍未回收")
+}
+
+// 已关闭会话 AcquireLease 报错;Release 对关闭/越界计数静默。
+func TestLeaseOnClosedSession(t *testing.T) {
+	_, s := newOrphanFixture(time.Hour)
+	s.Close()
+	if err := s.AcquireLease(); err == nil {
+		t.Fatal("closed 会话 AcquireLease 应报错")
+	}
+	s.ReleaseLease() // 不应 panic
+}

@@ -143,6 +143,16 @@ func handleDirectTCP(newChan ssh.NewChannel) {
 	<-done
 }
 
+// extStderr 把 Channel.WriteExtended(extended code=1) 适配为 io.Writer,
+// 供 exec 命令的 Stderr 写入 SSH 扩展数据流。
+type extStderr struct {
+	ch interface {
+		WriteExtended([]byte, uint32) (int, error)
+	}
+}
+
+func (w extStderr) Write(p []byte) (int, error) { return w.ch.WriteExtended(p, 1) }
+
 func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer ch.Close()
 
@@ -278,7 +288,15 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				return
 			}
 			c.Stdout = ch
-			c.Stderr = ch
+			// stderr 走 SSH 扩展数据(extended code 1):与真实 sshd 一致,
+			// 供客户端 StderrPipe 分离读取(RunExec 依赖此验证分流)。
+			if ext, ok := ch.(interface {
+				WriteExtended([]byte, uint32) (int, error)
+			}); ok {
+				c.Stderr = extStderr{ext}
+			} else {
+				c.Stderr = ch
+			}
 			c.Stdin = ch
 			err := c.Run()
 			// 发送退出状态,满足 SSH 协议(真实 OpenSSH 会自动发送)

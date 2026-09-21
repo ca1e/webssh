@@ -1,8 +1,9 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,22 +17,9 @@ import (
 
 // ---------- 主机管理 ----------
 
-type hostView struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Host          string `json:"host"`
-	Port          int    `json:"port"`
-	ConnType      string `json:"conn_type"`
-	Username      string `json:"username"`
-	AuthType      string `json:"auth_type"`
-	KeyPath       string `json:"key_path"`
-	JumpID        string `json:"jump_id"`
-	Group         string `json:"group"`
-	StartupCmd    string `json:"startup_cmd"`
-	FollowSSHPath bool   `json:"follow_ssh_path"`
-	HasPassword   bool   `json:"has_password"`
-	HasPassphrase bool   `json:"has_passphrase"`
-}
+// hostView 即 store.HostPublic:统一脱敏投影,凭据只回
+// Has* 标识。
+type hostView = store.HostPublic
 
 // defaultPort 返回连接方式的默认端口。
 func defaultPort(connType string) int {
@@ -42,14 +30,7 @@ func defaultPort(connType string) int {
 }
 
 func toView(h store.Host) hostView {
-	return hostView{
-		ID: h.ID, Name: h.Name, Host: h.Host, Port: orDefault(h.Port, 22),
-		ConnType: h.ConnType,
-		Username: h.Username, AuthType: h.AuthType, KeyPath: h.KeyPath,
-		JumpID: h.JumpID, Group: h.Group, StartupCmd: h.StartupCmd,
-		FollowSSHPath: h.FollowSSHPath,
-		HasPassword:   h.Password != "", HasPassphrase: h.Passphrase != "",
-	}
+	return store.PublicHost(h)
 }
 
 func orDefault(v, def int) int {
@@ -85,18 +66,56 @@ func (a *API) listHosts(c *gin.Context) {
 	c.JSON(200, out)
 }
 
-// exportHosts 直接下载 hosts.json 配置文件原文(凭据为 base64 混淆,非加密)。
+// exportReq 导出请求;模式只由前端按钮决定(encrypted/plaintext),
+// 不以口令框留空推断——留空/过短在加密模式直接校验报错。
+type exportReq struct {
+	Mode     string `json:"mode"`
+	Password string `json:"password"`
+}
+
+// exportHosts 生成 webssh-bundle-v1 导出文件。加密模式(默认推荐)用导出
+// 口令经 scrypt 派生密钥逐条加密;无密码模式仅由独立按钮显式触发,整体
+// 明文(凭据 base64),文件名 hosts-plaintext.json 并留痕日志。
 func (a *API) exportHosts(c *gin.Context) {
-	data, err := a.st.ReadRaw()
-	if err != nil {
-		fail(c, 400, "读取配置文件失败: "+err.Error())
+	var req exportReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, 400, "参数错误: "+err.Error())
 		return
 	}
-	c.Header("Content-Disposition", `attachment; filename="hosts.json"`)
+	wires, err := a.st.ExportWires()
+	if err != nil {
+		fail(c, 500, "导出失败: "+err.Error())
+		return
+	}
+	var data []byte
+	filename := "hosts-bundle.json"
+	switch req.Mode {
+	case "", "encrypted":
+		if len(req.Password) < 4 {
+			fail(c, 400, "导出口令至少 4 位")
+			return
+		}
+		if data, err = store.EncodeBundleEncrypted(wires, req.Password); err != nil {
+			fail(c, 500, "导出失败: "+err.Error())
+			return
+		}
+	case "plaintext":
+		if data, err = store.EncodeBundlePlaintext(wires); err != nil {
+			fail(c, 500, "导出失败: "+err.Error())
+			return
+		}
+		filename = "hosts-plaintext.json"
+	default:
+		fail(c, 400, "未知导出模式")
+		return
+	}
+	log.Printf("主机导出: 模式=%s 条数=%d", req.Mode, len(wires))
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Data(200, "application/json; charset=utf-8", data)
 }
 
 // importNormalize 按 createHost 同口径校验并规范化导入条目,返回是否有效。
+// "password 认证且最终无任何凭据来源 → 无效":调用前须先完成引用保留合并。
 func importNormalize(h store.Host) (store.Host, bool) {
 	h.Name = strings.TrimSpace(h.Name)
 	h.Host = strings.TrimSpace(h.Host)
@@ -111,7 +130,7 @@ func importNormalize(h store.Host) (store.Host, bool) {
 	if ct == store.ConnTelnet {
 		// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空(同 createHost)
 		h.Username, h.AuthType = "", ""
-		h.Password, h.KeyPath, h.Passphrase = "", "", ""
+		h.PasswordRef, h.KeyPath, h.PassphraseRef = "", "", ""
 		h.JumpID, h.StartupCmd, h.FollowSSHPath = "", "", false
 		return h, true
 	}
@@ -121,7 +140,7 @@ func importNormalize(h store.Host) (store.Host, bool) {
 	if h.AuthType != store.AuthPassword && h.AuthType != store.AuthKey {
 		return h, false
 	}
-	if h.AuthType == store.AuthPassword && h.Password == "" {
+	if h.AuthType == store.AuthPassword && h.PasswordRef == "" {
 		return h, false
 	}
 	if h.AuthType == store.AuthKey && h.KeyPath == "" {
@@ -130,25 +149,49 @@ func importNormalize(h store.Host) (store.Host, bool) {
 	return h, true
 }
 
-// importHosts 按 hosts.json 磁盘格式导入并合并(同名+同主机覆盖,其余保留);
-// 文件整体不合法返回 400,单条无效静默跳过。
+// importHosts 接收 webssh-bundle-v1 bundle(multipart: file + 可选 password)
+// 并合并(同名+同主机覆盖、保留原 ID 与原凭据引用);非 bundle 格式/未知
+// 格式 400;单条无效静默跳过,整体口令错误/损坏 400。
 func (a *API) importHosts(c *gin.Context) {
-	dec := json.NewDecoder(c.Request.Body)
-	dec.DisallowUnknownFields()
-	var wires []store.HostWire
-	if err := dec.Decode(&wires); err != nil {
-		fail(c, 400, "文件格式错误")
+	fh, err := c.FormFile("file")
+	if err != nil {
+		fail(c, 400, "缺少上传文件(表单字段 file)")
 		return
 	}
-	if dec.More() {
-		fail(c, 400, "文件格式错误")
+	f, err := fh.Open()
+	if err != nil {
+		fail(c, 400, "读取上传文件失败")
+		return
+	}
+	defer f.Close()
+	// bundle 为纯配置数据,64MiB 上限防误传巨型文件拖垮内存
+	data, err := io.ReadAll(io.LimitReader(f, 64<<20))
+	if err != nil {
+		fail(c, 400, "读取上传文件失败")
+		return
+	}
+	wires, err := store.DecodeBundle(data, c.PostForm("password"))
+	if err != nil {
+		fail(c, 400, store.FriendlyBundleError(err))
 		return
 	}
 	hosts := make([]store.Host, 0, len(wires))
 	for _, w := range wires {
-		h, err := store.HostFromWire(w)
+		h, err := a.st.ImportWire(w)
 		if err != nil {
 			continue // 凭据非合法 base64,静默跳过该条
+		}
+		// 命中现有主机且 bundle 条目无凭据 → 保留原引用,使"最终无任何凭据
+		// 来源"的判定基于合并后的真实状态(对齐 pickSecret 留空=保留原值)
+		if h.PasswordRef == "" || h.PassphraseRef == "" {
+			if old, ok := a.st.FindByNameHost(h.Name, h.Host); ok {
+				if h.PasswordRef == "" {
+					h.PasswordRef = old.PasswordRef
+				}
+				if h.PassphraseRef == "" {
+					h.PassphraseRef = old.PassphraseRef
+				}
+			}
 		}
 		if h, ok := importNormalize(h); ok {
 			hosts = append(hosts, h)
@@ -186,6 +229,7 @@ func validateHost(req hostReq) string {
 	return ""
 }
 
+// createHost 表单明文凭据 → secrets 库换引用后入库;引用不落 hosts.json。
 func (a *API) createHost(c *gin.Context) {
 	var req hostReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -200,11 +244,11 @@ func (a *API) createHost(c *gin.Context) {
 	// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空(表单在切到
 	// telnet 前预填的默认值如 username=root 不得入库,否则列表会显示 root)
 	username, authType := strings.TrimSpace(req.Username), req.AuthType
-	password, keyPath, passphrase := req.Password, req.KeyPath, req.Passphrase
+	passwordRef, keyPath, passphraseRef := "", req.KeyPath, ""
 	jumpID, startupCmd, follow := req.JumpID, req.StartupCmd, req.FollowSSHPath
 	if ct == store.ConnTelnet {
 		username, authType = "", ""
-		password, keyPath, passphrase = "", "", ""
+		keyPath = ""
 		jumpID, startupCmd, follow = "", "", false
 	}
 	if ct == store.ConnSSH {
@@ -216,13 +260,29 @@ func (a *API) createHost(c *gin.Context) {
 			fail(c, 400, "私钥认证必须填写私钥路径")
 			return
 		}
+		if req.Password != "" {
+			ref, err := a.st.PutPassword("", req.Password)
+			if err != nil {
+				fail(c, 500, err.Error())
+				return
+			}
+			passwordRef = ref
+		}
+		if req.Passphrase != "" {
+			ref, err := a.st.PutPassphrase("", req.Passphrase)
+			if err != nil {
+				fail(c, 500, err.Error())
+				return
+			}
+			passphraseRef = ref
+		}
 	}
 	h, err := a.st.Put(store.Host{
 		Name: strings.TrimSpace(req.Name), Host: strings.TrimSpace(req.Host),
 		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
 		Username: username,
-		AuthType: authType, Password: password, KeyPath: keyPath,
-		Passphrase: passphrase, JumpID: jumpID,
+		AuthType: authType, PasswordRef: passwordRef, KeyPath: keyPath,
+		PassphraseRef: passphraseRef, JumpID: jumpID,
 		Group: strings.TrimSpace(req.Group), StartupCmd: startupCmd,
 		FollowSSHPath: follow,
 	})
@@ -233,7 +293,8 @@ func (a *API) createHost(c *gin.Context) {
 	c.JSON(200, toView(h))
 }
 
-// update:密码/口令/私钥路径留空表示保留原值。
+// updateHost:密码/口令留空 = 保留原引用;填写 = 原位替换密文记录。
+// 私钥路径留空 = 保留原值。
 func (a *API) updateHost(c *gin.Context) {
 	id := c.Param("id")
 	old, ok := a.st.Get(id)
@@ -253,22 +314,38 @@ func (a *API) updateHost(c *gin.Context) {
 	}
 	// telnet 仅保留 名称/主机/端口/分组,SSH 专属字段一律清空
 	username, authType := strings.TrimSpace(req.Username), req.AuthType
-	password, keyPath, passphrase := pickSecret(req.Password, old.Password),
-		pickSecret(req.KeyPath, old.KeyPath), pickSecret(req.Passphrase, old.Passphrase)
+	passwordRef, keyPath, passphraseRef := old.PasswordRef,
+		pickSecret(req.KeyPath, old.KeyPath), old.PassphraseRef
 	jumpID, startupCmd, follow := req.JumpID, req.StartupCmd, req.FollowSSHPath
 	if ct == store.ConnTelnet {
 		username, authType = "", ""
-		password, keyPath, passphrase = "", "", ""
+		passwordRef, keyPath, passphraseRef = "", "", ""
 		jumpID, startupCmd, follow = "", "", false
 	}
 	if ct == store.ConnSSH {
-		if req.AuthType == store.AuthPassword && req.Password == "" && old.Password == "" {
+		if req.AuthType == store.AuthPassword && req.Password == "" && old.PasswordRef == "" {
 			fail(c, 400, "密码认证必须填写密码")
 			return
 		}
 		if req.AuthType == store.AuthKey && req.KeyPath == "" && old.KeyPath == "" {
 			fail(c, 400, "私钥认证必须填写私钥路径")
 			return
+		}
+		if req.Password != "" {
+			ref, err := a.st.PutPassword(old.PasswordRef, req.Password)
+			if err != nil {
+				fail(c, 500, err.Error())
+				return
+			}
+			passwordRef = ref
+		}
+		if req.Passphrase != "" {
+			ref, err := a.st.PutPassphrase(old.PassphraseRef, req.Passphrase)
+			if err != nil {
+				fail(c, 500, err.Error())
+				return
+			}
+			passphraseRef = ref
 		}
 	}
 	h, err := a.st.Put(store.Host{
@@ -277,9 +354,9 @@ func (a *API) updateHost(c *gin.Context) {
 		Port: orDefault(req.Port, defaultPort(ct)), ConnType: ct,
 		Username:      username,
 		AuthType:      authType,
-		Password:      password,
+		PasswordRef:   passwordRef,
 		KeyPath:       keyPath,
-		Passphrase:    passphrase,
+		PassphraseRef: passphraseRef,
 		JumpID:        jumpID,
 		Group:         strings.TrimSpace(req.Group),
 		StartupCmd:    startupCmd,
@@ -299,7 +376,8 @@ func pickSecret(newVal, oldVal string) string {
 	return oldVal
 }
 
-// duplicateHost 复制主机为一份新配置(含已保存的密码/私钥口令),名称追加 " - copy"。
+// duplicateHost 复制主机为一份新配置(凭据引用与源主机共享同一条加密记录),
+// 名称追加 " - copy"。
 func (a *API) duplicateHost(c *gin.Context) {
 	old, ok := a.st.Get(c.Param("id"))
 	if !ok {
@@ -313,9 +391,9 @@ func (a *API) duplicateHost(c *gin.Context) {
 		ConnType:      old.ConnType,
 		Username:      old.Username,
 		AuthType:      old.AuthType,
-		Password:      old.Password,
+		PasswordRef:   old.PasswordRef,
 		KeyPath:       old.KeyPath,
-		Passphrase:    old.Passphrase,
+		PassphraseRef: old.PassphraseRef,
 		JumpID:        old.JumpID,
 		Group:         old.Group,
 		StartupCmd:    old.StartupCmd,
@@ -348,6 +426,7 @@ func (a *API) resolveJump(id string) (*store.Host, error) {
 }
 
 // testHost 支持在表单未保存/密码留空(沿用已存密码)的情况下测试。
+// 表单新输入的明文凭据临时入库即测即删( ForgetSecret),不覆盖已存引用。
 func (a *API) testHost(c *gin.Context) {
 	var req hostReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -359,21 +438,40 @@ func (a *API) testHost(c *gin.Context) {
 		Name: req.Name, Host: strings.TrimSpace(req.Host), Port: orDefault(req.Port, defaultPort(ct)),
 		ConnType: ct,
 		Username: strings.TrimSpace(req.Username), AuthType: req.AuthType,
-		Password: req.Password, KeyPath: req.KeyPath, Passphrase: req.Passphrase,
-		JumpID: req.JumpID, Group: strings.TrimSpace(req.Group), StartupCmd: req.StartupCmd,
+		KeyPath: req.KeyPath,
+		JumpID:  req.JumpID, Group: strings.TrimSpace(req.Group), StartupCmd: req.StartupCmd,
 	}
 	if req.ID != "" && ct == store.ConnSSH {
 		if old, ok := a.st.Get(req.ID); ok {
-			if h.Password == "" {
-				h.Password = old.Password
-			}
 			if h.KeyPath == "" {
 				h.KeyPath = old.KeyPath
 			}
-			if h.Passphrase == "" {
-				h.Passphrase = old.Passphrase
+			if req.Password == "" {
+				h.PasswordRef = old.PasswordRef
+			}
+			if req.Passphrase == "" {
+				h.PassphraseRef = old.PassphraseRef
 			}
 		}
+	}
+	// 临时凭据:Put 新记录拿引用,测试完删除;不写回 hosts.json
+	if req.Password != "" {
+		ref, err := a.st.PutPassword("", req.Password)
+		if err != nil {
+			fail(c, 500, err.Error())
+			return
+		}
+		h.PasswordRef = ref
+		defer a.st.ForgetSecret(ref)
+	}
+	if req.Passphrase != "" {
+		ref, err := a.st.PutPassphrase("", req.Passphrase)
+		if err != nil {
+			fail(c, 500, err.Error())
+			return
+		}
+		h.PassphraseRef = ref
+		defer a.st.ForgetSecret(ref)
 	}
 	jump, err := a.resolveJump(h.JumpID)
 	if err != nil {

@@ -89,7 +89,7 @@ func TestParseDockerInfoScriptComposeV2(t *testing.T) {
 	want := dockerServerInfo{
 		ClientVersion: "26.1.5", ServerVersion: "26.1.5+dfsg1", APIVersion: "1.45",
 		StorageDriver: "overlay2",
-		OSType: "linux", Architecture: "x86_64", OS: "Ubuntu 22.04",
+		OSType:        "linux", Architecture: "x86_64", OS: "Ubuntu 22.04",
 		Containers: 5, Running: 3, Paused: 0, Stopped: 2, Images: 10,
 	}
 	if info != want {

@@ -1,9 +1,9 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
 import { ArrowDown, Connection, DArrowLeft, Monitor, Operation, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '../contextMenu'
-import { fetchHostsFile, importHosts } from '../api'
+import { exportBundle, importBundle } from '../api'
 import { settings } from '../settings'
 
 const props = defineProps({
@@ -92,31 +92,67 @@ function onImexClick(e) {
   imexOpen(rect.left, rect.bottom + 4, imexEl)
 }
 
-// 导出:下载 hosts.json 原文,优先系统保存对话框,不支持时回退浏览器下载
-async function doExport() {
-  imexClose()
-  try {
-    const blob = await fetchHostsFile()
-    if (window.showSaveFilePicker) {
-      try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: 'hosts.json',
-          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
-        })
-        const writable = await handle.createWritable()
-        await writable.write(blob)
-        await writable.close()
-        return
-      } catch (e) {
-        if (e?.name === 'AbortError') return // 用户取消保存,静默
-      }
+// 下载 blob:优先系统保存对话框,不支持时回退浏览器下载
+async function saveBlob(blob, filename) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+      })
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return
+    } catch (e) {
+      if (e?.name === 'AbortError') return // 用户取消保存,静默
     }
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'hosts.json'
-    a.click()
-    URL.revokeObjectURL(url)
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ---------- 加密导出对话框(口令两次确认;模式只由按钮决定) ----------
+
+const exportDlg = reactive({ show: false, password: '', confirm: '' })
+
+function openExportDialog() {
+  imexClose()
+  exportDlg.password = ''
+  exportDlg.confirm = ''
+  exportDlg.show = true
+}
+
+async function doExportEncrypted() {
+  if (exportDlg.password.length < 4) {
+    ElMessage.warning('导出口令至少 4 位')
+    return
+  }
+  if (exportDlg.password !== exportDlg.confirm) {
+    ElMessage.warning('两次输入的口令不一致')
+    return
+  }
+  try {
+    const { blob, filename } = await exportBundle('encrypted', exportDlg.password)
+    await saveBlob(blob, filename)
+    exportDlg.show = false
+    ElMessage.success('已导出加密 bundle(凭据已加密,导入需口令)')
+  } catch (e) {
+    ElMessage.error(e.message || '导出失败')
+  }
+}
+
+// 无密码导出:独立按钮显式触发,凭据 base64 明文,仅限内网备份/快速迁移
+async function doExportPlaintext() {
+  try {
+    const { blob, filename } = await exportBundle('plaintext', '')
+    await saveBlob(blob, filename)
+    exportDlg.show = false
+    ElMessage.warning('已导出无密码 bundle(含明文凭据,请妥善保管)')
   } catch (e) {
     ElMessage.error(e.message || '导出失败')
   }
@@ -127,15 +163,26 @@ function doImport() {
   fileEl.value?.click()
 }
 
-// 导入:读取 JSON 数组提交后端合并;文件解析失败等错误弹一条提示,列表不变
+// 导入:加密 bundle 追问口令;解密失败/旧数组格式由后端统一给引导文案
 async function onImportFile(e) {
   const file = e.target.files?.[0]
   e.target.value = '' // 允许重复选择同一文件
   if (!file) return
   try {
-    const arr = JSON.parse(await file.text())
-    if (!Array.isArray(arr)) throw new Error('文件格式错误')
-    const res = await importHosts(arr)
+    let password = ''
+    try {
+      const doc = JSON.parse(await file.text())
+      if (doc && typeof doc === 'object' && doc.kdf) {
+        const { value } = await ElMessageBox.prompt(
+          '该 bundle 已加密,请输入导出时设置的口令', '导入口令', { inputType: 'password' }
+        )
+        password = value || ''
+      }
+    } catch (pe) {
+      if (pe === 'cancel' || pe?.action === 'cancel') return // 用户取消
+      // 非 JSON 文件交给后端判定格式并给出引导文案
+    }
+    const res = await importBundle(file, password)
     ElMessage.success(`已导入 ${res.count} 台主机`)
     emit('refresh')
   } catch (err) {
@@ -209,10 +256,35 @@ async function onImportFile(e) {
         :style="{ left: imex.x + 'px', top: imex.y + 'px' }"
         @contextmenu.prevent
       >
-        <div class="ctx-item" @click.stop="doExport">导出主机列表</div>
+        <div class="ctx-item" @click.stop="openExportDialog">导出主机列表(加密)</div>
         <div class="ctx-item" @click.stop="doImport">导入主机列表</div>
       </div>
     </teleport>
+
+    <!-- 加密导出对话框:口令两次确认;无密码导出为独立显式按钮 -->
+    <el-dialog v-model="exportDlg.show" title="导出主机列表" width="380px" append-to-body>
+      <el-input
+        v-model="exportDlg.password"
+        type="password"
+        show-password
+        placeholder="导出口令(至少 4 位,导入时需提供)"
+        style="margin-bottom: 10px"
+      />
+      <el-input
+        v-model="exportDlg.confirm"
+        type="password"
+        show-password
+        placeholder="再次输入口令确认"
+      />
+      <div style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
+        凭据将以口令加密(scrypt + AES-GCM);口令不与服务器启动密码通用,遗失后无法导入。
+      </div>
+      <template #footer>
+        <el-button type="warning" plain @click="doExportPlaintext">无密码导出</el-button>
+        <el-button @click="exportDlg.show = false">取消</el-button>
+        <el-button type="primary" @click="doExportEncrypted">加密导出</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 导入文件选择(隐藏,系统文件选择框由菜单项触发) -->
     <input ref="fileEl" type="file" accept=".json,application/json" style="display: none" @change="onImportFile" />

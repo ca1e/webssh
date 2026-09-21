@@ -1,8 +1,10 @@
 package sshmgr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,10 +40,15 @@ type Manager struct {
 	// 孤儿会话无人再接管,宽限期一到即回收,不再永久占用连接与 maxSessions 名额。
 	orphanGrace time.Duration
 
+	// resolve 凭据引用解析器(secrets.Reveal 注入);拨号时现场解密。
+	resolve secretResolver
+
 	// dialTelnetFn telnet 拨号注入点(测试用);nil 时使用真实拨号。
 	dialTelnetFn func(ctx context.Context, h store.Host) (*telnetConn, string, error)
 }
 
+// New 构造会话管理器。凭据解析器经 SetSecretResolver 注入(main.go 在
+// secrets.Open 之后、服务启动之前调用一次;未注入时密码/口令主机不可拨号)。
 func New(configDir string, maxSessions int, orphanGrace time.Duration) *Manager {
 	m := &Manager{
 		sessions:    map[string]*Session{},
@@ -54,6 +61,11 @@ func New(configDir string, maxSessions int, orphanGrace time.Duration) *Manager 
 		_ = json.Unmarshal(data, &m.known)
 	}
 	return m
+}
+
+// SetSecretResolver 注入凭据引用解析器(secrets.Store.Reveal)。
+func (m *Manager) SetSecretResolver(r func(ref string) (string, error)) {
+	m.resolve = secretResolver(r)
 }
 
 func (m *Manager) saveKnown() {
@@ -102,13 +114,25 @@ func expandHome(p string) string {
 	return p
 }
 
-func authMethods(h store.Host) ([]ssh.AuthMethod, error) {
+// secretResolver 把 secrets 库引用解析为明文凭据(拨号时调用)。
+type secretResolver func(ref string) (string, error)
+
+// authMethods 依据主机认证类型构造 SSH 认证方法;password/passphrase 从
+// secrets 库经 resolver 现场解密,Host 结构体上不存在明文字段。
+func authMethods(h store.Host, resolve secretResolver) ([]ssh.AuthMethod, error) {
 	switch h.AuthType {
 	case store.AuthPassword:
-		if h.Password == "" {
+		if h.PasswordRef == "" {
 			return nil, fmt.Errorf("未配置密码")
 		}
-		return []ssh.AuthMethod{ssh.Password(h.Password)}, nil
+		if resolve == nil {
+			return nil, fmt.Errorf("凭据库未接入,无法解析密码")
+		}
+		pw, err := resolve(h.PasswordRef)
+		if err != nil {
+			return nil, fmt.Errorf("解析密码失败: %w", err)
+		}
+		return []ssh.AuthMethod{ssh.Password(pw)}, nil
 	case store.AuthKey:
 		if h.KeyPath == "" {
 			return nil, fmt.Errorf("未配置私钥路径")
@@ -118,8 +142,15 @@ func authMethods(h store.Host) ([]ssh.AuthMethod, error) {
 			return nil, fmt.Errorf("读取私钥失败: %w", err)
 		}
 		var signer ssh.Signer
-		if h.Passphrase != "" {
-			signer, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(h.Passphrase))
+		if h.PassphraseRef != "" {
+			if resolve == nil {
+				return nil, fmt.Errorf("凭据库未接入,无法解析私钥口令")
+			}
+			pp, err := resolve(h.PassphraseRef)
+			if err != nil {
+				return nil, fmt.Errorf("解析私钥口令失败: %w", err)
+			}
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(pp))
 		} else {
 			signer, err = ssh.ParsePrivateKey(data)
 		}
@@ -133,7 +164,7 @@ func authMethods(h store.Host) ([]ssh.AuthMethod, error) {
 }
 
 func (m *Manager) clientConfig(h store.Host, addr string, trustNewKey bool) (*ssh.ClientConfig, error) {
-	methods, err := authMethods(h)
+	methods, err := authMethods(h, m.resolve)
 	if err != nil {
 		return nil, err
 	}
@@ -396,9 +427,11 @@ type Session struct {
 	targetAddr  string
 
 	// 终端附着引用计数与孤儿回收计时器(s.mu 保护)。会话的存活性自此等价于
-	// "至少一个终端 WS 附着,或断开后仍处于宽限期内";前端关浏览器/关闭标签页
-	// 之外的路径(崩溃、刷新间隙)都收敛为:宽限期到 → 自动回收。
+	// "至少一个终端 WS 附着,或 MCP 调用租约 >0,或断开后仍处于宽限期内";
+	// 前端关浏览器/关闭标签页之外的路径(崩溃、刷新间隙)都收敛为:宽限期到
+	// → 自动回收。
 	termRefs    int
+	leases      int // MCP 调用租约计数:与 termRefs 平级防孤儿收割
 	orphanTimer *time.Timer
 
 	sftpOnce   sync.Once
@@ -480,6 +513,36 @@ func (s *Session) DetachTerminal() {
 	}
 }
 
+// AcquireLease 登记一次 MCP 调用租约:计数 +1 并解除待命的孤儿回收;
+// 会话已关闭时报错(调用方应重新开会话)。与 ReleaseLease 成对(defer)。
+func (s *Session) AcquireLease() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("会话已断开")
+	}
+	if s.orphanTimer != nil {
+		s.orphanTimer.Stop()
+		s.orphanTimer = nil
+	}
+	s.leases++
+	return nil
+}
+
+// ReleaseLease 注销一次 MCP 调用租约;计数归零且无终端附着时布防宽限期
+// 孤儿回收(与终端引用同一回收路径)。
+func (s *Session) ReleaseLease() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.leases <= 0 {
+		return
+	}
+	s.leases--
+	if s.leases == 0 {
+		s.armOrphanLocked()
+	}
+}
+
 // armOrphan 在无终端附着时布防孤儿回收计时,用于新建会话:拨号成功但前端
 // 死在首个终端建立前(如浏览器请求发出即被关闭)也能被宽限期回收。
 func (s *Session) armOrphan() {
@@ -490,7 +553,8 @@ func (s *Session) armOrphan() {
 
 func (s *Session) armOrphanLocked() {
 	// orphanGrace <= 0 关闭该机制(手工构造的 Manager/测试默认不复活的哨兵值)
-	if s.mgr == nil || s.closed || s.termRefs > 0 || s.mgr.orphanGrace <= 0 {
+	// 租约(MCP 调用)与终端附着同为存活凭据:任一 >0 即不布防。
+	if s.mgr == nil || s.closed || s.termRefs > 0 || s.leases > 0 || s.mgr.orphanGrace <= 0 {
 		return
 	}
 	s.orphanTimer = time.AfterFunc(s.mgr.orphanGrace, s.reapIfOrphan)
@@ -498,7 +562,7 @@ func (s *Session) armOrphanLocked() {
 
 func (s *Session) reapIfOrphan() {
 	s.mu.Lock()
-	if s.closed || s.termRefs > 0 {
+	if s.closed || s.termRefs > 0 || s.leases > 0 {
 		s.mu.Unlock()
 		return
 	}
@@ -1020,6 +1084,125 @@ func (s *Session) Run(cmd string) (string, error) {
 	defer sess.Close()
 	out, err := sess.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// ExecResult 一次分离式 exec 的结果:stdout/stderr 分流、真实退出码与
+// 超限截断标记(MCP ssh_exec 工具的返回契约)。
+type ExecResult struct {
+	Stdout    string
+	Stderr    string
+	ExitCode  int
+	Truncated bool
+}
+
+// limitBuffer 是带上限的写目标:超过 cap 后丢弃后续字节并置 Truncated,
+// 保证远端进程可继续写完(管道持续排空)而不阻塞、服务端内存不失控。
+type limitBuffer struct {
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	cap       int64
+	n         int64
+	truncated bool
+}
+
+func (b *limitBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.n < b.cap {
+		room := b.cap - b.n
+		if int64(len(p)) <= room {
+			b.buf.Write(p)
+			b.n += int64(len(p))
+			return len(p), nil
+		}
+		b.buf.Write(p[:room])
+		b.n = b.cap
+	}
+	b.truncated = true
+	return len(p), nil // 丢弃但不报错:让远端写完、拿到完整退出码
+}
+
+func (b *limitBuffer) String() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String(), b.truncated
+}
+
+// RunExec 在 SSH exec 通道(无 PTY)执行命令:stdout/stderr 分离、提取真实
+// 退出码,输出按 limit 字节/流截断(超限丢弃续流并置 Truncated);ctx 取消
+// 时向远端发 SIGKILL 并关闭通道后返回超时错误。telnet 会话返回 ErrSSHOnly
+// (与 Run 同语义)。
+func (s *Session) RunExec(ctx context.Context, cmd string, limit int64) (ExecResult, error) {
+	if err := s.checkOpen(); err != nil {
+		return ExecResult{}, err
+	}
+	if s.isTelnet() {
+		return ExecResult{}, ErrSSHOnly
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	sess, err := client.NewSession()
+	if err != nil {
+		return ExecResult{}, fmt.Errorf("创建执行会话失败: %w", err)
+	}
+	defer sess.Close()
+
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return ExecResult{}, fmt.Errorf("创建执行会话失败: %w", err)
+	}
+	stderr, err := sess.StderrPipe()
+	if err != nil {
+		return ExecResult{}, fmt.Errorf("创建执行会话失败: %w", err)
+	}
+	outBuf, errBuf := &limitBuffer{cap: limit}, &limitBuffer{cap: limit}
+	var pump sync.WaitGroup
+	pump.Add(2)
+	go func() { defer pump.Done(); _, _ = io.Copy(outBuf, stdout) }()
+	go func() { defer pump.Done(); _, _ = io.Copy(errBuf, stderr) }()
+
+	// 启动远端命令:必须在泵就绪后、Wait 前(pump 未就绪会丢输出头部,
+	// 不 Start 则 Wait 永久阻塞)
+	if err := sess.Start(cmd); err != nil {
+		pump.Wait()
+		return ExecResult{}, fmt.Errorf("执行命令失败: %w", err)
+	}
+
+	// ctx 取消:SIGKILL + Close 让 Wait 立即返回;管道排空后 pump 退出。
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- sess.Wait() }()
+	killCtx := func() {
+		_ = sess.Signal(ssh.SIGKILL)
+		_ = sess.Close()
+	}
+	timedOut := false
+	select {
+	case err = <-waitErr:
+	case <-ctx.Done():
+		timedOut = true
+		killCtx()
+		err = <-waitErr
+	}
+	pump.Wait() // 管道 EOF 后两个泵必然退出,再读缓冲避免竞态
+
+	var res ExecResult
+	res.Stdout, res.Truncated = outBuf.String()
+	_, truncated := errBuf.String()
+	res.Truncated = res.Truncated || truncated
+	res.Stderr, _ = errBuf.String()
+	if timedOut {
+		return res, fmt.Errorf("命令执行超时,已被中止(未超过输出上限的部分仍随错误丢弃)")
+	}
+	var exitErr *ssh.ExitError
+	if errors.As(err, &exitErr) {
+		res.ExitCode = exitErr.Waitmsg.ExitStatus()
+		return res, nil // 非零退出码是结果而非传输错误
+	}
+	if err != nil {
+		return res, fmt.Errorf("执行命令失败: %w", err)
+	}
+	return res, nil
 }
 
 // checkForwardAllowed 探测远端 sshd 是否允许 TCP 转发。

@@ -19,6 +19,8 @@ import (
 	"webssh/internal/auth"
 	"webssh/internal/config"
 	"webssh/internal/handler"
+	"webssh/internal/mcp"
+	"webssh/internal/secrets"
 	"webssh/internal/sshmgr"
 	"webssh/internal/store"
 	"webssh/internal/transfer"
@@ -32,7 +34,14 @@ func main() {
 	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 		log.Fatalf("创建配置目录 %s 失败: %v", cfg.ConfigDir, err)
 	}
-	st, err := store.Open(cfg.ConfigDir)
+	// 凭据库先于主机配置打开:store 的 legacy 迁移要把旧密码写入 secrets
+	// (secrets 库先于主机配置初始化的顺序依赖);secrets 打开失败直接 fatal,
+	// 不带病迁移。
+	sec, err := secrets.Open(cfg.ConfigDir)
+	if err != nil {
+		log.Fatalf("打开凭据库失败: %v", err)
+	}
+	st, err := store.Open(cfg.ConfigDir, sec)
 	if err != nil {
 		log.Fatalf("加载主机配置失败: %v", err)
 	}
@@ -41,6 +50,7 @@ func main() {
 		log.Fatalf("加载启动密码配置失败: %v", err)
 	}
 	mgr := sshmgr.New(cfg.ConfigDir, cfg.MaxSessions, cfg.OrphanGrace)
+	mgr.SetSecretResolver(sec.Reveal)
 	transfers := transfer.NewManager(func(sid string) (transfer.Side, string, error) {
 		s, ok := mgr.Get(sid)
 		if !ok {
@@ -56,7 +66,31 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
-	handler.NewAPI(cfg, st, mgr, transfers, authSt).Register(r)
+
+	// MCP:/mcp 装配。认证口令按优先级:WEBSSH_MCP_TOKEN > mcp.json token >
+	// 锁屏密码(不另行配置)。中间件逐请求 fail-closed:三处口令均不存在或
+	// WEBSSH_MCP_ENABLED=false 时 /mcp 一律 404(不探测不暴露服务存在性);
+	// 锁屏密码后设/更换立即生效,无需重启。配置非法仍启动 fatal。
+	mcpsrv, err := mcp.New(cfg.ConfigDir, st, mgr, authSt)
+	if err != nil {
+		log.Fatalf("MCP 配置加载失败: %v", err)
+	}
+	mcpsrv.Register(r)
+	log.Printf("MCP 就绪:/mcp(Bearer 认证,口令来源:%s)", mcpsrv.TokenSourceName())
+
+	handler.NewAPI(cfg, st, mgr, transfers, authSt, mcpsrv).Register(r)
+	// SIGHUP 热重载 mcp.json:失败保持旧策略 + 告警日志。
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			if err := mcpsrv.Reload(); err != nil {
+				log.Printf("mcp.json 热重载失败,保持旧策略: %v", err)
+			} else {
+				log.Printf("mcp.json 已热重载")
+			}
+		}
+	}()
 
 	dist, err := fs.Sub(distFS, "frontend/dist")
 	if err != nil {

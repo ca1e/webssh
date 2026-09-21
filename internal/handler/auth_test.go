@@ -11,6 +11,7 @@ import (
 
 	"webssh/internal/auth"
 	"webssh/internal/config"
+	"webssh/internal/secrets"
 	"webssh/internal/store"
 )
 
@@ -22,13 +23,17 @@ func newAuthTestServer(t *testing.T) *gin.Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(t.TempDir())
+	sec, err := secrets.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(t.TempDir(), sec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewAPI(&config.Config{}, st, nil, nil, authSt).Register(r)
+	NewAPI(&config.Config{}, st, nil, nil, authSt, nil).Register(r)
 	return r
 }
 

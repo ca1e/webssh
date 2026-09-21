@@ -1,4 +1,4 @@
-package handler
+package opsview
 
 import (
 	"math"
@@ -14,7 +14,7 @@ a2
 
 ===C===
 c1`
-	sections := parseSections(raw)
+	sections := ParseSections(raw)
 	if got := sections["A"]; got != "a1\na2" {
 		t.Fatalf("sections[A] = %q", got)
 	}
@@ -34,7 +34,7 @@ func TestParseSSHConfig(t *testing.T) {
 SOURCE=sshd -T
 /etc/ssh/sshd_config:PermitOpen host:2222
 /etc/ssh/sshd_config.d/hardening.conf:AllowAgentForwarding no`
-	cfg := parseSSHConfig(raw)
+	cfg := ParseSSHConfig(raw)
 	if cfg.AllowTcpForwarding != "yes" {
 		t.Fatalf("AllowTcpForwarding = %q", cfg.AllowTcpForwarding)
 	}
@@ -55,33 +55,33 @@ func TestParseDisks(t *testing.T) {
 	dfT := `Filesystem Type Size Used Avail Use% Mounted
 /dev/sda1 ext4 100G 50G 50G 50% /
 /dev/sdb1 xfs 10G 5G 5G 50% /data`
-	disks := parseDisks(dfT)
+	disks := ParseDisks(dfT)
 	if len(disks) != 2 {
-		t.Fatalf("parseDisks(df -hT) 条数 = %d, want 2", len(disks))
+		t.Fatalf("ParseDisks(df -hT) 条数 = %d, want 2", len(disks))
 	}
 	if disks[0].Device != "/dev/sda1" || disks[0].FsType != "ext4" ||
 		disks[0].Size != "100G" || disks[0].Mount != "/" || disks[0].UseNum != 50 {
-		t.Fatalf("parseDisks(df -hT)[0] = %+v", disks[0])
+		t.Fatalf("ParseDisks(df -hT)[0] = %+v", disks[0])
 	}
 
 	// df -h 回退:6 列,无类型
 	dfH := `Filesystem Size Used Avail Use% Mounted
 /dev/sda1 100G 50G 50G 50% /`
-	disks = parseDisks(dfH)
+	disks = ParseDisks(dfH)
 	if len(disks) != 1 {
-		t.Fatalf("parseDisks(df -h) 条数 = %d, want 1", len(disks))
+		t.Fatalf("ParseDisks(df -h) 条数 = %d, want 1", len(disks))
 	}
 	if disks[0].FsType != "" || disks[0].Device != "/dev/sda1" ||
 		disks[0].Size != "100G" || disks[0].Mount != "/" || disks[0].UseNum != 50 {
-		t.Fatalf("parseDisks(df -h)[0] = %+v", disks[0])
+		t.Fatalf("ParseDisks(df -h)[0] = %+v", disks[0])
 	}
 
 	// 空段与列数不足的行跳过
-	if got := parseDisks(""); len(got) != 0 {
-		t.Fatalf("parseDisks(\"\") = %+v", got)
+	if got := ParseDisks(""); len(got) != 0 {
+		t.Fatalf("ParseDisks(\"\") = %+v", got)
 	}
-	if got := parseDisks("/dev/sda1 ext4 100G"); len(got) != 0 {
-		t.Fatalf("parseDisks(短行) = %+v", got)
+	if got := ParseDisks("/dev/sda1 ext4 100G"); len(got) != 0 {
+		t.Fatalf("ParseDisks(短行) = %+v", got)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestParseProcs(t *testing.T) {
 	raw := `USER               PID  %CPU %MEM      VSZ    RSS TTY      STAT START   TIME COMMAND
 root             1  0.5  1.2 123456  67890 ?        Ss   10:00   0:01 /sbin/init
 user            42  2.5  0.3    999    111 pts/0    R    10:01   0:00 ps aux --sort=-%cpu`
-	procs := parseProcs(raw)
+	procs := ParseProcs(raw)
 	if len(procs) != 2 {
 		t.Fatalf("parseProcs 条数 = %d, want 2", len(procs))
 	}
@@ -117,50 +117,50 @@ SwapFree:         256000 kB
 1.50 0.50 0.10 1/100 1234
 ===UPTIME===
 12345.67 23456.78`
-	m := parseMetricsSample(raw)
+	m := ParseMetricsSample(raw)
 	if m == nil {
 		t.Fatal("parseMetricsSample 返回 nil")
 	}
 	// stat: user+nice=300, system+irq+softirq=430, idle+iowait=4500, steal=80
-	if m.statActive != 810 || m.statTotal != 5310 {
-		t.Fatalf("statActive/Total = %d/%d, want 810/5310", m.statActive, m.statTotal)
+	if m.StatActive != 810 || m.StatTotal != 5310 {
+		t.Fatalf("statActive/Total = %d/%d, want 810/5310", m.StatActive, m.StatTotal)
 	}
-	if m.netRx != 1234 || m.netTx != 5678 {
-		t.Fatalf("netRx/Tx = %d/%d", m.netRx, m.netTx)
+	if m.NetRx != 1234 || m.NetTx != 5678 {
+		t.Fatalf("netRx/Tx = %d/%d", m.NetRx, m.NetTx)
 	}
-	if m.memTotalMB != 2000 || m.memAvailMB != 1000 || m.swapTotalMB != 500 || m.swapFreeMB != 250 {
+	if m.MemTotalMB != 2000 || m.MemAvailMB != 1000 || m.SwapTotalMB != 500 || m.SwapFreeMB != 250 {
 		t.Fatalf("mem = %+v", m)
 	}
-	if m.load1m != 1.5 || m.load5m != 0.5 || m.load15m != 0.1 {
+	if m.Load1m != 1.5 || m.Load5m != 0.5 || m.Load15m != 0.1 {
 		t.Fatalf("load = %+v", m)
 	}
-	if m.uptimeSec != 12345.67 {
-		t.Fatalf("uptime = %v", m.uptimeSec)
+	if m.UptimeSec != 12345.67 {
+		t.Fatalf("uptime = %v", m.UptimeSec)
 	}
 
 	// 缺关键段时不报错,返回零值样本
-	if m := parseMetricsSample("===LOAD===\n1.0 0 0"); m == nil {
+	if m := ParseMetricsSample("===LOAD===\n1.0 0 0"); m == nil {
 		t.Fatal("局部样本不应返回 nil")
 	}
 }
 
 func TestBuildMetricsPayload(t *testing.T) {
 	base := time.Now()
-	prev := &metricsSample{
-		statTotal: 4310, statActive: 10,
-		netRx: 234, netTx: 5178,
-		memTotalMB: 2000, memAvailMB: 1000, swapTotalMB: 500, swapFreeMB: 250,
-		load1m: 1.5, load5m: 0.5, load15m: 0.1, uptimeSec: 12335.67,
-		ts: base,
+	prev := &MetricsSample{
+		StatTotal: 4310, StatActive: 10,
+		NetRx: 234, NetTx: 5178,
+		MemTotalMB: 2000, MemAvailMB: 1000, SwapTotalMB: 500, SwapFreeMB: 250,
+		Load1m: 1.5, Load5m: 0.5, Load15m: 0.1, UptimeSec: 12335.67,
+		TS: base,
 	}
-	cur := &metricsSample{
-		statTotal: 5310, statActive: 810,
-		netRx: 1234, netTx: 5678,
-		memTotalMB: 2000, memAvailMB: 1000, swapTotalMB: 500, swapFreeMB: 250,
-		load1m: 1.5, load5m: 0.5, load15m: 0.1, uptimeSec: 12345.67,
-		ts: base.Add(10 * time.Second),
+	cur := &MetricsSample{
+		StatTotal: 5310, StatActive: 810,
+		NetRx: 1234, NetTx: 5678,
+		MemTotalMB: 2000, MemAvailMB: 1000, SwapTotalMB: 500, SwapFreeMB: 250,
+		Load1m: 1.5, Load5m: 0.5, Load15m: 0.1, UptimeSec: 12345.67,
+		TS: base.Add(10 * time.Second),
 	}
-	p := buildMetricsPayload(cur, prev)
+	p := BuildMetricsPayload(cur, prev)
 	// CPU:(810-10)/(5310-4310)*100 = 80%
 	if math.Abs(p.CPUPct-80) > 1e-9 {
 		t.Fatalf("CPUPct = %v, want 80", p.CPUPct)
@@ -179,7 +179,7 @@ func TestBuildMetricsPayload(t *testing.T) {
 	}
 
 	// 首个样本无 prev:无 CPU/NET 增量
-	first := buildMetricsPayload(cur, nil)
+	first := BuildMetricsPayload(cur, nil)
 	if first.CPUPct != 0 || first.NetRxBps != 0 || first.NetTxBps != 0 {
 		t.Fatalf("首个样本不应有增量: %+v", first)
 	}

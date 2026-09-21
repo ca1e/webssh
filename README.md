@@ -11,6 +11,50 @@ Web 前端 SSH 管理工具(Go + Vue3 单二进制部署)。
 - **主机详情**:静态信息采集与实时指标(5s),Docker 容器列表 / 详情 / 日志流 / 容器内 shell;容器 ID 统一白名单清洗 + shell 转义。
 - **代理 / 转发**:本地端口转发(`-L`)、SOCKS5 动态代理(`-D`),均只监听 127.0.0.1;跳板机在连接配置中指定。支持三种模式:**标准**(direct-tcpip / tcpip-forward)、**原始模式**(sshd `AllowTcpForwarding=no` 时的绕行方案):仅开一条 SSH exec 通道,在远端运行内嵌的辅助程序(静态编译,amd64/arm64,经 SFTP 或 base64 自动上传、内容寻址缓存、不监听任何端口),多条隧道连接在该通道上多路复用;「自动」模式先探测 sshd 配置,禁止时直接落原始模式,运行中被拒也会原地热切换。另支持 **K8s 服务端口转发**(OpenLens 式交互):选命名空间 → 列出 Service/Pod 及其端口 → 点击端口一键启动,本地端口自动分配,活动列表实时展示连接数与收发流量;亦支持手动添加(命名端口/其他资源类型/指定本地端口)。面向 sshd 禁止 TCP 转发(`AllowTcpForwarding=no`)但部署了 Kubernetes 的主机:流量经 SSH exec 通道在远端由 `kubectl port-forward` 桥接到 Service/Pod——远端只依赖 kubectl(无需 nc/socat),本机纯 Go 实现、跨平台零依赖。
 - **K8s 面板**(借鉴 Freelens 的无 Agent 架构):工具栏打开,面向远端装有 kubectl 的主机。**集群状态**:单次 exec 探测当前 context / 集群名 / API Server / 服务端版本 / 节点就绪数,自动识别发行版(EKS/GKE/AKS/OpenShift/K3s/Kind/Minikube),结果按会话缓存(成功 60s / 失败 10s,支持强制刷新)。**Pod 列表**:经 `kubectl get pods -w --output-watch-events -o json` 的 WebSocket 事件流实时增量更新(List 快照全量替换 + ADDED/MODIFIED/DELETED 事件),支持全部命名空间(`-A`)或指定命名空间、名称过滤,断线 3s 自动重连并重新拉快照;kubectl 失败(RBAC/集群不可达)以错误事件透出。行操作:日志(`kubectl logs -f --tail N` 实时流,复用日志面板)与终端(`kubectl exec -it` 交互 PTY,仅 Running 的 Pod;bash 优先回退 sh,支持窗口 resize),以独立标签页打开、可刷新恢复。kubectl 定位统一走 PATH 直查 + 登录环境回退;动态参数一律 RFC 1123 白名单校验 + 单引号转义。
+- **MCP Server**(AI Agent 接入,docs/mcp-design.md):把 SSH 管理能力封装为 **12 个工具**,经 Streamable HTTP 暴露在 `/mcp`,与 Web 端共享同一会话层/主机配置。核心不变式:**Agent 永不接触密码/私钥**;telnet 主机一律拒绝。`ssh_exec` 接受任意命令字符串(超时/输出上限可配)。**可选约束**(默认全关,Web 设置 → MCP 页管理,保存即热生效):**路径白名单**(exec 命令内路径与下载路径须落在前缀内,含符号链接逃逸防护)、**可见主机**(按分组/单台勾选,未勾选主机对 MCP 完全不可见)、**工具权限**(显式白名单,默认列出全部工具,清空即不暴露任何工具)。工具一览:
+
+  | 工具 | 域 | 说明 |
+  | --- | --- | --- |
+  | `ssh_list_hosts` | hosts | 主机元数据(脱敏投影,无凭据) |
+  | `ssh_host_info` | hosts | 单主机配置详情(同上口径) |
+  | `ssh_test_connection` | hosts | 拨号+认证+host key 校验,不留连接 |
+  | `ssh_exec` | exec | 任意命令执行,返回 stdout/stderr/exit_code(唯一执行入口) |
+  | `ssh_system_info` | monitor | 静态主机信息 |
+  | `ssh_cpu_memory` | monitor | CPU/内存采样 |
+  | `ssh_disk_usage` | monitor | df 解析 |
+  | `ssh_network_status` | monitor | 网络吞吐采样 + 接口地址 |
+  | `ssh_service_status` | monitor | systemd 单元状态(只读) |
+  | `ssh_docker_status` | monitor | 容器列表 + 引擎/Compose 信息 |
+  | `ssh_k8s_status` | monitor | 集群探测(缓存) |
+  | `ssh_download_file` | files | SFTP → 服务端暂存目录,返回路径/sha256/大小 |
+
+  **接入**:`WEBSSH_MCP_TOKEN=<口令>`(或 `$XDG_CONFIG_HOME/webssh/mcp.json` 的 `token` 字段,环境变量优先)。未配置 = MCP 整体禁用(`/mcp` 返回 404)。请求带 `Authorization: Bearer <口令>`,Claude Desktop(mcp-remote) 配置示例:
+
+  ```json
+  {
+    "mcpServers": {
+      "webssh": {
+        "url": "http://127.0.0.1:8090/mcp",
+        "headers": { "Authorization": "Bearer <你的口令>" }
+      }
+    }
+  }
+  ```
+
+  可选策略文件 `$XDG_CONFIG_HOME/webssh/mcp.json`(也可在 Web 设置 → MCP 页管理路径白名单;`SIGHUP` 热重载):
+
+  ```json
+  {
+    "enabled": true,
+    "domains": { "hosts": true, "exec": true, "files": true, "monitor": true },
+    "defaults": {
+      "exec_timeout": "15s", "read_max_bytes": 1048576, "download_max_bytes": 104857600,
+      "path_whitelist": { "enabled": false, "paths": ["/var/log/"] }
+    },
+    "visible_hosts": { "enabled": false, "ids": ["<host_id>", "..."] },
+    "tool_filter": { "tools": ["ssh_exec", "..."] }
+  }
+  ```
 
 ## 快速开始
 
@@ -60,11 +104,15 @@ make integration   # 集成测试:自动编译并拉起 cmd/testssh,覆盖
 | `WEBSSH_MAX_SESSIONS` | `64` | 同时活动会话数量上限 |
 | `WEBSSH_ORPHAN_GRACE` | `5m` | 最后一个终端断开后到自动回收孤儿会话之间的宽限期(支持 `30s`/`1h` 等时长写法;解析失败回落默认值) |
 | `WEBSSH_SSH_KEYS_DIR` | `~/.ssh` | 本地私钥目录 |
+| `WEBSSH_MCP_TOKEN` | (空) | MCP Bearer 口令(优先于 `mcp.json` 的 `token` 字段);两者均未配置时**自动复用锁屏密码**;三处均无时 MCP 整体禁用(`/mcp` 404)。改锁屏密码后 MCP 认证立即跟随 |
+| `WEBSSH_MCP_ENABLED` | `true` | 设为 `false` 强制禁用 MCP(`/mcp` 404) |
+| `WEBSSH_MASTER_KEY` | (空) | base64 的 32B 主密钥,覆盖 `master.key` 文件(容器从 secret 注入) |
 
 ## 安全说明
 
 - **默认仅监听 127.0.0.1**:全部 API 无鉴权,服务必须只暴露给本机。如确需外部访问,请经反向代理(TLS 终结 + 鉴权)转发,不要直接改 `WEBSSH_LISTEN_ADDR` 为 `0.0.0.0`。
 - **WebSocket 同源校验**:所有 WS 端点校验 Origin 与 Host 一致(非浏览器客户端无 Origin 放行),防御恶意网页对 127.0.0.1 服务的跨站 WebSocket 劫持。
-- `hosts.json` 中密码为明文保存(便于免密直连),文件与目录权限收紧为 0600 / 0700,请勿在多用户机器上使用。
+- **凭据加密存储**:主机密码/私钥口令以 AES-256-GCM 加密存于 `secrets.json`(0600),主密钥在 `master.key`(32B 随机,0600,首启自动生成;可用 `WEBSSH_MASTER_KEY` 环境变量注入 base64 密钥供容器场景使用);`hosts.json` 只存凭据引用,无任何明文/base64 凭据。**主机迁移/备份**用导出功能:加密导出(bundle,口令经 scrypt 派生密钥逐条加密)或无密码导出(明文凭据,仅限内网备份/快速迁移,文件名 `hosts-plaintext.json`);导入仅接受 WebSSH 导出的 bundle 格式。
+- **MCP 接入安全**:口令正确即拥有全部只读工具与全部主机访问权,请使用强口令并通过反向代理(TLS)暴露;服务默认仅监听 127.0.0.1。每次工具调用留痕于服务日志(工具/主机/结果/耗时)。`mcp-downloads/` 暂存目录位于配置目录内,注意磁盘占用与清理。
 - SSH 主机密钥采用 TOFU(首次信任)策略,指纹记录在 `known_hosts.json`;指纹变化时连接会失败,确认安全后重新连接即可。
 - 远程 shell 工作目录跟随(SFTP 面板)仅在主机勾选 Follow SSH path 时启用,依赖注入的 OSC 7 提示符钩子(bash/zsh 无感注入,其他 shell 静默跳过);fish 等 shell 下 SFTP 面板不会自动跟随终端目录,属预期行为。

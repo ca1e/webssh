@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"webssh/internal/secrets"
 	"webssh/internal/sshmgr"
 	"webssh/internal/store"
 )
@@ -59,6 +60,12 @@ esac`
 
 var testSSHAddr string
 
+// 包级凭据库与测试密码引用(与 sshmgr 集成 harness 同构)。
+var (
+	itSec   *secrets.Store
+	itPwRef string
+)
+
 func TestMain(m *testing.M) {
 	// 编译 cmd/testssh(与 sshmgr 的集成 harness 同构,独立成包避免测试包导入环)
 	bin := filepath.Join(os.TempDir(), "webssh-integration-testssh-k8s")
@@ -66,6 +73,22 @@ func TestMain(m *testing.M) {
 	build.Dir = moduleRoot()
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "编译 cmd/testssh 失败: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	secDir, err := os.MkdirTemp("", "webssh-k8s-it-secrets")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建凭据目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(secDir)
+	itSec, err = secrets.Open(secDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "打开测试凭据库失败: %v\n", err)
+		os.Exit(1)
+	}
+	itPwRef, err = itSec.Put("", secrets.KindPassword, "test123")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "写入测试密码失败: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -137,17 +160,25 @@ func moduleRoot() string {
 	return filepath.Dir(filepath.Dir(wd))
 }
 
+// newITManager 创建接入凭据库的测试 Manager(与 sshmgr 集成测试同口径)。
+func newITManager(t *testing.T, maxSessions int) *sshmgr.Manager {
+	t.Helper()
+	m := sshmgr.New(t.TempDir(), maxSessions, 0) // grace=0:测试内关闭孤儿回收
+	m.SetSecretResolver(itSec.Reveal)
+	return m
+}
+
 // openSession 建立到 testssh 的会话(假 kubectl 经 PATH 前缀被 command -v 命中)。
 func openSession(t *testing.T) *sshmgr.Session {
 	t.Helper()
-	mgr := sshmgr.New(t.TempDir(), 8, 0)
+	mgr := newITManager(t, 8)
 	var port int
 	if _, portStr, err := net.SplitHostPort(testSSHAddr); err == nil {
 		fmt.Sscanf(portStr, "%d", &port)
 	}
 	host := store.Host{
 		Name: "k8s-it-host", Host: "127.0.0.1", Port: port,
-		Username: "test", AuthType: store.AuthPassword, Password: "test123",
+		Username: "test", AuthType: store.AuthPassword, PasswordRef: itPwRef,
 	}
 	s, err := mgr.OpenSession(context.Background(), host, nil, true)
 	if err != nil {

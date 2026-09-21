@@ -57,14 +57,18 @@ export const updateHost = (id, h) => put(`/api/hosts/${id}`, h)
 export const deleteHost = (id) => del(`/api/hosts/${id}`)
 export const duplicateHost = (id) => post(`/api/hosts/${id}/duplicate`)
 export const testHost = (h) => post('/api/hosts/test', h)
-export const importHosts = (hosts) => post('/api/hosts/import', hosts)
 export const listKeys = () => get('/api/keys')
 
-// 导出主机列表:返回 hosts.json 原文 Blob(不走 JSON 解析,保留文件字节)
-export async function fetchHostsFile() {
+// 导出主机列表为 webssh-bundle-v1:mode = 'encrypted'(口令加密)| 'plaintext'(无密码),
+// 返回 { blob, filename }(不走 JSON 解析,保留文件字节)
+export async function exportBundle(mode, password) {
   let res
   try {
-    res = await fetch('/api/hosts/export')
+    res = await fetch('/api/hosts/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, password }),
+    })
   } catch {
     throw new Error('无法连接后端服务')
   }
@@ -78,7 +82,36 @@ export async function fetchHostsFile() {
     }
     throw new Error(msg || `导出失败(HTTP ${res.status})`)
   }
-  return res.blob()
+  const dispo = res.headers.get('Content-Disposition') || ''
+  const filename =
+    dispo.match(/filename="([^"]+)"/)?.[1] ||
+    (mode === 'plaintext' ? 'hosts-plaintext.json' : 'hosts-bundle.json')
+  return { blob: await res.blob(), filename }
+}
+
+// 导入主机 bundle:multipart 上传(字段 file + 可选 password);
+// 格式/口令错误由后端统一返回文案
+export async function importBundle(file, password) {
+  const fd = new FormData()
+  fd.append('file', file)
+  if (password) fd.append('password', password)
+  let res
+  try {
+    res = await fetch('/api/hosts/import', { method: 'POST', body: fd })
+  } catch {
+    throw new Error('无法连接后端服务')
+  }
+  let data = null
+  try {
+    data = await res.json()
+  } catch {
+    /* 空响应体 */
+  }
+  if (!res.ok) {
+    if (res.status === 401) authState.locked = true
+    throw new Error((data && data.error) || `导入失败(HTTP ${res.status})`)
+  }
+  return data
 }
 
 // ---------- 会话 ----------
@@ -148,6 +181,11 @@ export const k8sResources = (sid, namespace) =>
 
 export const k8sState = (sid, refresh = false) =>
   get(`/api/sessions/${sid}/k8s/state${refresh ? '?refresh=1' : ''}`)
+
+// ---------- MCP 设置 ----------
+
+export const mcpGetSettings = () => get('/api/mcp/settings')
+export const mcpSaveSettings = (payload) => put('/api/mcp/settings', payload)
 
 // ---------- 工具 ----------
 

@@ -74,7 +74,7 @@ func freePort(t *testing.T) int {
 // TestIntegrationRawLocalForward 原始模式本地转发端到端:
 // 监听端口 → HTTP 请求经 SSH exec 复用通道 → 目标服务 → 回程。
 func TestIntegrationRawLocalForward(t *testing.T) {
-	s := openPlainSession(t, New(t.TempDir(), 8, 0))
+	s := openPlainSession(t, newITManager(t, 8))
 
 	// 目标服务:远端(同机)HTTP,返回会话专属标记
 	marker := fmt.Sprintf("raw-local-%d", time.Now().UnixNano())
@@ -120,7 +120,7 @@ func TestIntegrationRawLocalForward(t *testing.T) {
 // TestIntegrationRawSOCKS5 原始模式 SOCKS5 代理端到端:
 // SOCKS5 CONNECT 经复用通道由远端辅助程序拨出。
 func TestIntegrationRawSOCKS5(t *testing.T) {
-	s := openPlainSession(t, New(t.TempDir(), 8, 0))
+	s := openPlainSession(t, newITManager(t, 8))
 
 	marker := fmt.Sprintf("raw-socks-%d", time.Now().UnixNano())
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +166,7 @@ func TestIntegrationRawSOCKS5(t *testing.T) {
 // TestIntegrationRawConcurrent 并发 16 个请求经同一条复用通道,
 // 各自校验响应标记,验证多路复用无串流。
 func TestIntegrationRawConcurrent(t *testing.T) {
-	s := openPlainSession(t, New(t.TempDir(), 8, 0))
+	s := openPlainSession(t, newITManager(t, 8))
 
 	var mu sync.Mutex
 	seen := map[string]bool{}
@@ -218,7 +218,7 @@ func TestIntegrationRawConcurrent(t *testing.T) {
 
 // TestIntegrationRawHelperCleanup 会话关闭后远端辅助程序无残留进程。
 func TestIntegrationRawHelperCleanup(t *testing.T) {
-	s := openPlainSession(t, New(t.TempDir(), 8, 0))
+	s := openPlainSession(t, newITManager(t, 8))
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer target.Close()
@@ -272,10 +272,10 @@ func TestIntegrationAutoFallbackToRaw(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	mgr := New(t.TempDir(), 8, 0)
+	mgr := newITManager(t, 8)
 	host := store.Host{
 		Name: "it-deny-host", Host: "127.0.0.1", Port: port,
-		Username: "test", AuthType: store.AuthPassword, Password: "test123",
+		Username: "test", AuthType: store.AuthPassword, PasswordRef: itPwRef,
 	}
 	s, err := mgr.OpenSession(context.Background(), host, nil, true)
 	if err != nil {
