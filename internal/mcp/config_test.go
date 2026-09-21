@@ -35,8 +35,8 @@ func TestLoadDefaultsWhenAbsent(t *testing.T) {
 	if cfg.Defaults.PathWhitelist.Enabled || len(cfg.Defaults.PathWhitelist.Paths) != 0 {
 		t.Fatalf("路径白名单默认应关闭且为空: %+v", cfg.Defaults.PathWhitelist)
 	}
-	if len(cfg.ToolFilter.Tools) != 15 {
-		t.Fatalf("工具白名单默认应显式列出全部 15 个工具: %v", cfg.ToolFilter.Tools)
+	if len(cfg.ToolFilter.Tools) != len(allToolNames) || len(allToolNames) != 17 {
+		t.Fatalf("工具白名单默认应显式列出全部 17 个工具: %v", cfg.ToolFilter.Tools)
 	}
 }
 

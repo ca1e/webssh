@@ -223,6 +223,12 @@ func TestDenyPaths(t *testing.T) {
 		{"新建缺凭据", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "password"}, []string{"口令认证必须提交"}},
 		{"新建缺私钥", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "key"}, []string{"key_path"}},
 		{"新建坏认证", "ssh_create_host", map[string]any{"name": "n", "host": "1.2.3.4", "username": "root", "auth_type": "none"}, []string{"auth_type 非法"}},
+		{"编辑未知主机", "ssh_edit_host", map[string]any{"host": "ghost", "name": "x"}, []string{"不存在"}},
+		{"编辑telnet", "ssh_edit_host", map[string]any{"host": "con1", "name": "x"}, []string{"仅 SSH 主机支持"}},
+		{"编辑无字段", "ssh_edit_host", map[string]any{"host": "box1"}, []string{"未提供任何可改字段"}},
+		{"编辑空名称", "ssh_edit_host", map[string]any{"host": "box1", "name": "  "}, []string{"name 不能为空"}},
+		{"编辑坏端口", "ssh_edit_host", map[string]any{"host": "box1", "port": 70000}, []string{"port 非法"}},
+		{"编辑碰凭据", "ssh_edit_host", map[string]any{"host": "box1", "auth_type": "key"}, []string{"arguments"}},
 		{"删除未确认", "ssh_delete_host", map[string]any{"host": "box1"}, []string{"confirm=true"}},
 		{"复制未知主机", "ssh_duplicate_host", map[string]any{"host": "ghost"}, []string{"不存在"}},
 	}
@@ -266,8 +272,25 @@ func TestHostsToolsSnapshotZeroSecrets(t *testing.T) {
 	}
 }
 
-// TestHostWriteLifecycle create → duplicate → delete 全链路(单元,无真连接):
-// 验证脱敏投影、凭据只进不出(提交的明文不回显、跳板引用解析、下游引用拒删)。
+// TestListSessionsEmpty 无活跃会话时返回空列表(单元 fixture 不建真连接)。
+func TestListSessionsEmpty(t *testing.T) {
+	s := newFixture(t, "")
+	text, structured, isErr := callTool(t, s, "ssh_list_sessions", nil)
+	if isErr {
+		t.Fatalf("list_sessions 不应报错: %s", text)
+	}
+	blob, _ := json.Marshal(structured)
+	if string(blob) != "[]" {
+		t.Fatalf("无会话时应为空列表: %s", blob)
+	}
+	if secretPattern.MatchString(string(blob)) {
+		t.Fatalf("输出命中凭据模式: %s", blob)
+	}
+}
+
+// TestHostWriteLifecycle create → edit → duplicate → delete 全链路(单元,无真连接):
+// 验证脱敏投影、部分更新语义(未提供不改/空串清空/凭据字段结构不可触)、
+// 凭据只进不出(提交的明文不回显、跳板引用解析、下游引用拒删)。
 func TestHostWriteLifecycle(t *testing.T) {
 	s := newFixture(t, "")
 
@@ -307,6 +330,62 @@ func TestHostWriteLifecycle(t *testing.T) {
 		t.Fatalf("jump 名称未解析为 ID: %s", blob)
 	}
 
+	// edit(jumpbox):部分更新 —— 改六字段,未提供字段(jump/auth/key_path)必须原样保留。
+	text, out, isErr = callTool(t, s, "ssh_edit_host", map[string]any{
+		"host": "jumpbox", "name": "jumpbox-ed", "addr": "203.0.113.66",
+		"username": "deploy", "port": 2222, "group": "g2", "startup_cmd": "echo hi",
+	})
+	if isErr {
+		t.Fatalf("edit 失败: %s", text)
+	}
+	blob, _ = json.Marshal(out)
+	if secretPattern.MatchString(string(blob)) {
+		t.Fatalf("edit 输出命中凭据模式: %s", blob)
+	}
+	var edited struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+		Auth     string `json:"auth"`
+		JumpID   string `json:"jump_id"`
+		Group    string `json:"group"`
+		Startup  string `json:"startup_cmd"`
+	}
+	if err := json.Unmarshal(blob, &edited); err != nil ||
+		edited.Name != "jumpbox-ed" || edited.Host != "203.0.113.66" ||
+		edited.Port != 2222 || edited.Username != "deploy" ||
+		edited.Auth != "key" || edited.JumpID != created.ID ||
+		edited.Group != "g2" || edited.Startup != "echo hi" {
+		t.Fatalf("edit 投影不符: %s err=%v", blob, err)
+	}
+	if edited.ID == created.ID {
+		t.Fatal("edit 不应改变主机 ID")
+	}
+	// 凭据字段零触碰:key_path 与引用原样(store 层直查,MCP 面不回显)。
+	if st, ok := s.st.Get(edited.ID); !ok || st.KeyPath != "~/.ssh/id_ed25519" || st.PassphraseRef != "" {
+		t.Fatalf("edit 不得触碰凭据字段: %+v ok=%v", st, ok)
+	}
+	// 旧名解析失效,新名生效。
+	if _, _, isErr = callTool(t, s, "ssh_host_info", map[string]any{"host": "jumpbox"}); !isErr {
+		t.Fatal("改名后旧名应不可解析")
+	}
+	// 清空语义:group/startup_cmd 传 "" 即清空;未提供的字段不动。
+	text, out, isErr = callTool(t, s, "ssh_edit_host", map[string]any{
+		"host": "jumpbox-ed", "group": "", "startup_cmd": "",
+	})
+	if isErr {
+		t.Fatalf("edit 清空失败: %s", text)
+	}
+	blob, _ = json.Marshal(out)
+	if !strings.Contains(string(blob), `"group":""`) || !strings.Contains(string(blob), `"startup_cmd":""`) {
+		t.Fatalf("空串应清空分组/启动命令: %s", blob)
+	}
+	if !strings.Contains(string(blob), `"port":2222`) {
+		t.Fatalf("未提供字段应保持: %s", blob)
+	}
+
 	// duplicate:默认新名 + 凭据引用共享(脱敏投影同为 secret 型)。
 	text, out, isErr = callTool(t, s, "ssh_duplicate_host", map[string]any{"host": "newbox"})
 	if isErr {
@@ -330,8 +409,8 @@ func TestHostWriteLifecycle(t *testing.T) {
 		t.Fatalf("被跳板引用的主机应拒删: %q isErr=%v", text, isErr)
 	}
 
-	// delete:先删 jumpbox,再删 newbox;删后 list 不再可见。
-	for _, name := range []string{"jumpbox", "newbox", "newbox - copy"} {
+	// delete:先删 jumpbox-ed,再删 newbox;删后 list 不再可见。
+	for _, name := range []string{"jumpbox-ed", "newbox", "newbox - copy"} {
 		text, _, isErr = callTool(t, s, "ssh_delete_host", map[string]any{"host": name, "confirm": true})
 		if isErr {
 			t.Fatalf("delete %s 失败: %s", name, text)

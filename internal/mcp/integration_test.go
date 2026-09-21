@@ -1,6 +1,6 @@
 //go:build integration
 
-// MCP 协议集成测试:拉起 cmd/testssh,经 go-sdk InMemory transports 对 15 个
+// MCP 协议集成测试:拉起 cmd/testssh,经 go-sdk InMemory transports 对 17 个
 // 工具逐个走 happy 路径(真会话/真 exec/真 SFTP),并做全量快照断言:
 // 任何输出不得包含凭据明文或 password/passphrase/PRIVATE KEY 词形。
 // 运行:go test -tags=integration ./internal/mcp/
@@ -155,10 +155,10 @@ func callHappy(t *testing.T, s *Server, tool string, args map[string]any) json.R
 	return blob
 }
 
-// TestIntegrationAllToolsHappy 15 工具全量 happy 路径(真 testssh)。
+// TestIntegrationAllToolsHappy 17 工具全量 happy 路径(真 testssh)。
 func TestIntegrationAllToolsHappy(t *testing.T) {
 	s := newITServer(t)
-	// 工具面数量回归:默认全开 = 15
+	// 工具面数量回归:默认全开 = 17
 	serverConn, clientConn := mcp.NewInMemoryTransports()
 	sc, err := s.currentServer().Connect(context.Background(), serverConn, nil)
 	if err != nil {
@@ -175,8 +175,8 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 15 {
-		t.Fatalf("tools/list = %d, want 15", len(list.Tools))
+	if len(list.Tools) != 17 {
+		t.Fatalf("tools/list = %d, want 17", len(list.Tools))
 	}
 
 	ctx := context.Background()
@@ -189,7 +189,7 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 		t.Fatalf("test_connection = %s", h)
 	}
 
-	// hosts 写域:create(口令认证)→ duplicate → delete;输出经快照断言。
+	// hosts 写域:create(口令认证)→ edit → duplicate → delete;输出经快照断言。
 	c := callHappy(t, s, "ssh_create_host", map[string]any{
 		"name": "it-created", "host": "203.0.113.77", "username": "t",
 		"auth_type": "password", "password": "unit-tmp-pw",
@@ -197,11 +197,19 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 	if !strings.Contains(string(c), `"name":"it-created"`) || !strings.Contains(string(c), `"auth":"secret"`) {
 		t.Fatalf("create_host = %s", c)
 	}
-	dc := callHappy(t, s, "ssh_duplicate_host", map[string]any{"host": "it-created"})
-	if !strings.Contains(string(dc), `"name":"it-created - copy"`) {
+	ec := callHappy(t, s, "ssh_edit_host", map[string]any{
+		"host": "it-created", "name": "it-created-2", "addr": "203.0.113.78",
+		"username": "t2", "port": 2200, "group": "g-it", "startup_cmd": "echo hi",
+	})
+	if !strings.Contains(string(ec), `"name":"it-created-2"`) || !strings.Contains(string(ec), `"port":2200`) ||
+		!strings.Contains(string(ec), `"auth":"secret"`) {
+		t.Fatalf("edit_host = %s", ec)
+	}
+	dc := callHappy(t, s, "ssh_duplicate_host", map[string]any{"host": "it-created-2"})
+	if !strings.Contains(string(dc), `"name":"it-created-2 - copy"`) {
 		t.Fatalf("duplicate_host = %s", dc)
 	}
-	for _, n := range []string{"it-created", "it-created - copy"} {
+	for _, n := range []string{"it-created-2", "it-created-2 - copy"} {
 		callHappy(t, s, "ssh_delete_host", map[string]any{"host": n, "confirm": true})
 	}
 
@@ -211,6 +219,13 @@ func TestIntegrationAllToolsHappy(t *testing.T) {
 	})
 	if !strings.Contains(string(e), `"exit_code":0`) || !strings.Contains(string(e), "load average") {
 		t.Fatalf("exec uptime = %s", e)
+	}
+
+	// sessions 域:exec 建立的活会话(orphanGrace=0 不回收)必须可见。
+	ls := callHappy(t, s, "ssh_list_sessions", nil)
+	if !strings.Contains(string(ls), `"name":"it-host"`) || !strings.Contains(string(ls), `"conn_type":"ssh"`) ||
+		!strings.Contains(string(ls), `"addr":"127.0.0.1`) {
+		t.Fatalf("list_sessions = %s", ls)
 	}
 
 	// monitor 域

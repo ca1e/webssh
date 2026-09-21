@@ -323,6 +323,18 @@ func (s *Server) buildTools(cfg *Config, guard *pathguard.Guard) *mcp.Server {
 				Description: "新建 SSH 主机配置(仅 SSH;telnet 请走 Web 端)。auth_type=password 需提交口令明文、key 需提交服务端私钥路径;凭据只进不出,返回为脱敏投影。可见主机开关开启时,新主机会自动加入可见名单。",
 			}, s.toolCreateHost)
 		}
+		if allowed("ssh_edit_host") {
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "ssh_edit_host",
+				Description: "编辑既有主机的基础字段:名称、IP(addr)、用户名、端口、分组、启动命令(startup_cmd)。未提供的字段保持原值;group/startup_cmd 传空字符串即清空。认证方式与凭据不可经此工具修改(改密/换认证走 Web 端);telnet 主机拒绝。返回为脱敏投影。",
+			}, s.toolEditHost)
+		}
+		if allowed("ssh_list_sessions") {
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "ssh_list_sessions",
+				Description: "列出当前活跃 SSH/telnet 会话(Web 端终端与 MCP 工具建立的连接):会话 ID/主机/地址/用户/协议/已存活时长。只读投影,无凭据;可见主机名单外的会话不出现。",
+			}, s.toolListSessions)
+		}
 		if allowed("ssh_duplicate_host") {
 			mcp.AddTool(srv, &mcp.Tool{
 				Name:        "ssh_duplicate_host",

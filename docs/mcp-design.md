@@ -29,7 +29,8 @@ internal/mcp/
     settings.go        # 设置读写（Web 设置页 /api/mcp/settings 的后端）
     auth.go            # 预共享口令校验（ConstantTimeCompare / bcrypt）
     pathguard/         # 可选路径白名单 + 符号链接逃逸防护
-    tools_hosts.go     # ssh_list_hosts / ssh_host_info / ssh_test_connection / ssh_create_host / ssh_duplicate_host / ssh_delete_host
+    tools_hosts.go     # ssh_list_hosts / ssh_host_info / ssh_test_connection / ssh_create_host / ssh_edit_host / ssh_duplicate_host / ssh_delete_host
+    tools_sessions.go  # ssh_list_sessions
     tools_exec.go      # ssh_exec
     tools_files.go     # ssh_download_file
     tools_monitor.go   # ssh_system_info / ssh_cpu_memory / ssh_disk_usage / ssh_network_status / ssh_service_status / ssh_docker_status / ssh_k8s_status
@@ -45,7 +46,7 @@ internal/mcp/
 
 ---
 
-## 3. 工具面（15 个）
+## 3. 工具面（17 个）
 
 | 工具 | 域 | 说明 |
 | --- | --- | --- |
@@ -53,8 +54,10 @@ internal/mcp/
 | `ssh_host_info` | hosts | 单主机配置详情(同上口径) |
 | `ssh_test_connection` | hosts | 拨号+认证+host key 校验，不留连接 |
 | `ssh_create_host` | hosts | 新建 SSH 主机(口令/私钥认证;凭据入参即加密,输出脱敏;开关开启时新主机自动入可见名单) |
+| `ssh_edit_host` | hosts | 编辑主机基础字段:名称/IP(addr)/用户名/端口/分组/启动命令(指针入参,未提供不改;group/startup_cmd 传 "" 清空;认证方式与凭据不在入参 schema 内,未知字段拒绝) |
 | `ssh_duplicate_host` | hosts | 复制主机(凭据引用与源共享;名称可选;副本自动入可见名单) |
 | `ssh_delete_host` | hosts | 删除主机(confirm=true 二次确认;被用作跳板时拒删) |
+| `ssh_list_sessions` | hosts | 当前活跃会话快照（Web 终端与 MCP 工具建立的连接；只读投影，无凭据；受可见主机开关过滤） |
 | `ssh_exec` | exec | 执行任意命令字符串，返回 `{stdout, stderr, exit_code, truncated}` |
 | `ssh_system_info` | monitor | 静态主机信息 |
 | `ssh_cpu_memory` | monitor | CPU/内存/负载采样(1 秒差分) |
@@ -65,7 +68,7 @@ internal/mcp/
 | `ssh_k8s_status` | monitor | 集群探测(缓存) |
 | `ssh_download_file` | files | SFTP → 服务端暂存目录，返回路径/sha256/大小 |
 
-**显式不做**：审计日志、人工审批（elicitation）、会话管理工具、脚本执行层、主机凭据的读取/修改/删除（凭据只进不出：`ssh_create_host` 可提交新凭据，但不存在任何回读或更新已存凭据的工具；改密/删凭据走 Web 端）、远程文件写/删/读、上传、进程管理、服务启停、批量编排、telnet 暴露、命令配额、OAuth、多租户。
+**显式不做**：审计日志、人工审批（elicitation）、会话管理（开/关/接管——`ssh_list_sessions` 仅只读枚举）、脚本执行层、主机凭据的读取/修改/删除（凭据只进不出：`ssh_create_host` 可提交新凭据，`ssh_edit_host` 仅开放名称/IP/用户名/端口/分组/启动命令——认证方式与凭据字段不在其入参 schema 内，结构上不可触碰；改密/删凭据走 Web 端）、远程文件写/删/读、上传、进程管理、服务启停、批量编排、telnet 暴露、命令配额、OAuth、多租户。
 
 ---
 
@@ -92,7 +95,7 @@ internal/mcp/
 | --- | --- |
 | `defaults.path_whitelist` | 开启后：`ssh_exec` 命令内路径与 `ssh_download_file` 的 path 须落在前缀内。服务侧统一做 `~/` 展开、`path.Clean`、前缀匹配与逐级符号链接解析（SFTP Lstat/ReadLink，16 跳防环）；拒绝文案携带当前生效白名单，Agent 可自行纠偏。 |
 | `visible_hosts` | 开启后：`ssh_list_hosts` 仅返回 `ids` 内的主机；其余主机在任何工具中按「不存在」处理（不泄露存在性）。`ssh_create_host` / `ssh_duplicate_host` 产出的新主机自动追加进 `ids`（持久化 + 热生效；追加失败则整体回滚新建），避免刚写入的配置立即不可管理。 |
-| `tool_filter` | 显式工具白名单：仅 `tools` 内的工具注册暴露（`tools/list` 与调用双重生效）；空列表 = 不暴露任何工具；默认配置显式列出全部 15 个工具。工具名在加载与保存时校验，未知工具直接拒绝。 |
+| `tool_filter` | 显式工具白名单：仅 `tools` 内的工具注册暴露（`tools/list` 与调用双重生效）；空列表 = 不暴露任何工具；默认配置显式列出全部 17 个工具。工具名在加载与保存时校验，未知工具直接拒绝。 |
 
 三段配置均可在 Web 设置 → MCP 页管理，保存即写 `mcp.json` 并热重载生效。
 
@@ -124,6 +127,5 @@ internal/mcp/
 
 ## 8. 测试
 
-- 单元：配置加载/拒绝矩阵；pathguard 前缀匹配、`~/` 展开、`..` 规范化；可见主机过滤；工具过滤；设置读写回环（持久化保留既有字段 + 热生效 + guard 同步）；主机写链路（create→duplicate→delete，含跳板引用拒删与凭据零回显断言）。
-- 集成（`-tags=integration`）：拉起 `cmd/testssh`，经 go-sdk InMemory transports 对 15 个工具逐个走 happy 路径（真会话/真 exec/真 SFTP），并对全部输出做凭据零暴露快照断言。
-- 协议层：tools/list 数量、deny 路径（未知主机/telnet/空命令/相对路径/缺凭据/未确认删除）返回 IsError 文本而非协议错误、无堆栈、无凭据词形。
+- 单元：配置加载/拒绝矩阵；pathguard 前缀匹配、`~/` 展开、`..` 规范化；可见主机过滤；工具过滤；设置读写回环（持久化保留既有字段 + 热生效 + guard 同步）；主机写链路（create→edit→duplicate→delete，含部分更新语义、跳板引用拒删与凭据零回显断言）；无活跃会话时 list_sessions 返回空列表。
+- 集成（`-tags=integration`）：拉起 `cmd/testssh`，经 go-sdk InMemory transports 对 17 个工具逐个走 happy 路径（真会话/真 exec/真 SFTP；exec 后 list_sessions 必须看见活会话），并对全部输出做凭据零暴露快照断言。

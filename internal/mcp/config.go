@@ -45,7 +45,7 @@ type ToolFilterCfg struct {
 // allToolNames 全部工具名(config 校验与设置页目录共用)。
 var allToolNames = []string{
 	"ssh_list_hosts", "ssh_host_info", "ssh_test_connection",
-	"ssh_create_host", "ssh_duplicate_host", "ssh_delete_host",
+	"ssh_create_host", "ssh_edit_host", "ssh_duplicate_host", "ssh_delete_host", "ssh_list_sessions",
 	"ssh_exec", "ssh_download_file",
 	"ssh_system_info", "ssh_cpu_memory", "ssh_disk_usage",
 	"ssh_network_status", "ssh_service_status", "ssh_docker_status", "ssh_k8s_status",

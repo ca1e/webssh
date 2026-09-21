@@ -625,8 +625,11 @@ async function removeSession(id) {
   // 若请求此刻恰好已完成,runConnect 的竞态分支会回收刚建立的会话
   const ac = pendingAborts.get(id)
   if (ac) ac.abort()
-  if (sessions.value.length && activeId.value === id) {
-    activeId.value = sessions.value[Math.max(0, idx - 1)].id
+  if (activeId.value === id) {
+    // 回退目标取自完整 tab 序列(会话 + 容器标签):最后一个会话关闭时
+    // 若只剩设置等容器标签,必须落到其上,否则内容区空白
+    const all = orderedTabIds()
+    activeId.value = all.length ? all[Math.min(Math.max(idx - 1, 0), all.length - 1)] : ''
   }
   if (!sessions.value.some((s) => s.hostId === gone.hostId)) {
     delete hostSeq[gone.hostId]

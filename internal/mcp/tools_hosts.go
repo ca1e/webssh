@@ -1,7 +1,7 @@
 package mcp
 
 // hosts 域工具:ssh_list_hosts / ssh_host_info / ssh_test_connection /
-// ssh_create_host / ssh_duplicate_host / ssh_delete_host。
+// ssh_create_host / ssh_edit_host / ssh_duplicate_host / ssh_delete_host。
 // 输出统一走 store.PublicHost 脱敏投影:无凭据字段,auth 类型仅以
 // "secret"|"key" 标识 + Has* 布尔回答。凭据字段只进不出:password/passphrase
 // 仅作为 ssh_create_host 入参,提交后立即加密进 secrets 库换引用;任何返回
@@ -43,7 +43,7 @@ func mcpHostView(h store.Host) map[string]any {
 		// 密码型凭据是否存在 / 私钥口令是否存在(仅布尔,不含词形)
 		"has_secret":     p.HasPassword,
 		"has_key_secret": p.HasPassphrase,
-		"jump_id":        p.JumpID, "group": p.Group,
+		"jump_id":        p.JumpID, "group": p.Group, "startup_cmd": p.StartupCmd,
 	}
 }
 
@@ -113,7 +113,9 @@ func (s *Server) toolTestConnection(ctx context.Context, req *mcp.CallToolReques
 // "passphrase" 词形(快照测试 secretPattern 断言),中文"口令"不受限。
 // 写操作与读面同一口径:仅 SSH 主机(create 无 telnet 入参;duplicate/delete
 // 对 telnet 源/目标一律拒绝)。telnet 全生命周期管理留在 Web 端。
-// startup_cmd / follow_ssh_path 是终端交互便利项,不进 MCP 面。
+// 可编辑字段(名称/IP/用户名/端口/分组/启动命令)按指针入参区分"未提供/
+// 显式清空";认证方式与凭据不在 edit_host 面内(输入 schema 封闭,未知
+// 字段直接拒绝)——改密/换认证方式仍只能走 Web 端。
 
 // createHostIn 新建主机入参。password/passphrase 为明文字段:仅存在于
 // 单次调用的参数对象,入 store 前即换成引用。
@@ -208,6 +210,82 @@ func (s *Server) toolCreateHost(ctx context.Context, req *mcp.CallToolRequest, i
 		return nil
 	}()
 	defer func() { callLog("ssh_create_host", in.Name, err, start) }()
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, out, nil
+}
+
+// editHostIn 编辑主机入参:仅开放 名称/IP/用户名/端口/分组/启动命令 六个
+// 字段。指针语义 = 未提供即保持原值;字符串字段传 "" 即清空(分组/启动
+// 命令可清空,name/host/username 不可清空)。auth_type/凭据字段不在 schema
+// 内(封闭对象,未知属性直接拒绝)——凭据只进不出不变式不受影响。
+type editHostIn struct {
+	Host       string  `json:"host" jsonschema:"要编辑的主机名称或 ID(定位目标,不参与修改)"`
+	Name       *string `json:"name,omitempty" jsonschema:"新主机显示名称(可选;留空不改)"`
+	Addr       *string `json:"addr,omitempty" jsonschema:"新主机 IP 或域名(可选;留空不改)"`
+	Username   *string `json:"username,omitempty" jsonschema:"新登录用户名(可选;留空不改)"`
+	Port       *int    `json:"port,omitempty" jsonschema:"新 SSH 端口(可选;留空不改)"`
+	Group      *string `json:"group,omitempty" jsonschema:"新分组名(可选;传空字符串清空分组)"`
+	StartupCmd *string `json:"startup_cmd,omitempty" jsonschema:"新启动命令,连接后自动执行(可选;传空字符串清空)"`
+}
+
+func (s *Server) toolEditHost(ctx context.Context, req *mcp.CallToolRequest, in editHostIn) (*mcp.CallToolResult, any, error) {
+	start := time.Now()
+	var out any
+	err := func() error {
+		h, err := s.resolveHost(in.Host)
+		if err != nil {
+			return err
+		}
+		if err := rejectTelnet(h); err != nil {
+			return err
+		}
+		if in.Name == nil && in.Addr == nil && in.Username == nil &&
+			in.Port == nil && in.Group == nil && in.StartupCmd == nil {
+			return errors.New("未提供任何可改字段(name/addr/username/port/group/startup_cmd);请先用 ssh_host_info 查看现状")
+		}
+		if in.Name != nil {
+			name := strings.TrimSpace(*in.Name)
+			if name == "" {
+				return errors.New("name 不能为空;如需改名请传入非空名称")
+			}
+			h.Name = name
+		}
+		if in.Addr != nil {
+			addr := strings.TrimSpace(*in.Addr)
+			if addr == "" {
+				return errors.New("addr(IP/域名)不能为空;如需修改请传入非空地址")
+			}
+			h.Host = addr
+		}
+		if in.Username != nil {
+			username := strings.TrimSpace(*in.Username)
+			if username == "" {
+				return errors.New("username 不能为空;如需修改请传入非空用户名")
+			}
+			h.Username = username
+		}
+		if in.Port != nil {
+			if *in.Port < 1 || *in.Port > 65535 {
+				return fmt.Errorf("port 非法:%d(须为 1-65535)", *in.Port)
+			}
+			h.Port = *in.Port
+		}
+		if in.Group != nil {
+			h.Group = strings.TrimSpace(*in.Group)
+		}
+		if in.StartupCmd != nil {
+			h.StartupCmd = strings.TrimSpace(*in.StartupCmd)
+		}
+		saved, err := s.st.Put(h)
+		if err != nil {
+			return fmt.Errorf("主机保存失败:%w", err)
+		}
+		out = mcpHostView(saved)
+		return nil
+	}()
+	defer func() { callLog("ssh_edit_host", in.Host, err, start) }()
 	if err != nil {
 		return nil, nil, err
 	}
