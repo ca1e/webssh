@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElConfigProvider } from 'element-plus'
+import zhCNLocale from 'element-plus/es/locale/lang/zh-cn'
+import enLocale from 'element-plus/es/locale/lang/en'
 import { ArrowDown, ArrowRight, Box, CircleCloseFilled, Connection, DArrowRight, FolderOpened, Loading, Monitor, Moon, Plus, Promotion, Setting, Sunny } from '@element-plus/icons-vue'
 import ConnectionList from './components/ConnectionList.vue'
 import HostModal from './components/HostModal.vue'
@@ -18,6 +20,10 @@ import OverviewPanel from './components/OverviewPanel.vue'
 import { authState, authStatus, closeSession, deleteHost, duplicateHost, listHosts, listSessions, openSession } from './api'
 import { useContextMenu } from './contextMenu'
 import { isDark, settings } from './settings'
+import { t } from './i18n'
+
+// Element Plus 组件库自身文案跟随界面语言
+const epLocale = computed(() => (settings.language === 'en' ? enLocale : zhCNLocale))
 
 const hosts = ref([])
 // session: {id, hostId, name(带序号), host, username, jumpName,
@@ -296,7 +302,8 @@ async function restoreTabs() {
           id: r.id,
           hostId: r.hostId,
           status: lv ? 'open' : 'failed',
-          errMsg: lv ? '' : '会话已失效(服务端连接断开或已重启),点击重试重新连接',
+          restoreFailed: !lv, // 失效文案走 i18n,渲染时取词
+          errMsg: '',
           name: r.name,
           host: (lv && lv.host) || r.host,
           username: (lv && lv.username) || r.username,
@@ -445,7 +452,7 @@ function onTabsWheel(e) {
 // ---------- 顶栏按钮 ----------
 // 主题按钮:与设置页同一配置,单击循环 浅色 → 深色 → 跟随系统
 const themeTitle = computed(
-  () => ({ light: '主题:浅色', dark: '主题:深色', system: '主题:跟随系统' }[settings.theme])
+  () => ({ light: t('app.themeLight'), dark: t('app.themeDark'), system: t('app.themeSystem') }[settings.theme])
 )
 const themeIcon = computed(() => (isDark.value ? Moon : Sunny))
 function toggleTheme() {
@@ -467,8 +474,8 @@ function openSettings() {
   containerTabs.value.push({
     id,
     type: 'settings',
-    name: '设置',
-    label: '⚙ 设置',
+    name: '',
+    label: '',
   })
   activeId.value = id
 }
@@ -575,10 +582,10 @@ async function runConnect(s, host, trustNewKey) {
     s.errMsg = e.message
     if (e.message.includes('信任新密钥')) {
       try {
-        await ElMessageBox.confirm(`${e.message}`, '主机密钥变更', {
+        await ElMessageBox.confirm(`${e.message}`, t('app.hostKeyChanged'), {
           type: 'warning',
-          confirmButtonText: '信任新密钥并连接',
-          cancelButtonText: '取消',
+          confirmButtonText: t('app.trustAndConnect'),
+          cancelButtonText: t('common.cancel'),
         })
         trustRetry = true
       } catch {
@@ -684,8 +691,8 @@ function openEdit(host) {
 async function removeHost(host) {
   try {
     await ElMessageBox.confirm(
-      `确认删除连接「${host.name}」(${host.host})?保存的密码将从配置中移除。`,
-      '删除确认',
+      t('app.deleteHostConfirm', { name: host.name, host: host.host }),
+      t('common.deleteConfirmTitle'),
       { type: 'warning' }
     )
   } catch {
@@ -703,7 +710,7 @@ async function duplicate(host) {
   try {
     await duplicateHost(host.id)
     await loadHosts()
-    ElMessage.success(`已复制为「${host.name} - copy」`)
+    ElMessage.success(t('app.duplicated', { name: host.name }))
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -711,6 +718,7 @@ async function duplicate(host) {
 </script>
 
 <template>
+  <el-config-provider :locale="epLocale">
   <div class="layout">
     <LockScreen v-if="authState.locked" @unlocked="onUnlocked" />
     <header class="topbar">
@@ -719,7 +727,7 @@ async function duplicate(host) {
         :icon="Plus"
         @click="openCreate"
       >
-        新建连接
+        {{ t('app.newConnection') }}
       </el-button>
       <span class="spacer" />
       <div class="topbar-actions">
@@ -731,14 +739,14 @@ async function duplicate(host) {
             />
           </svg>
         </el-button>
-        <el-button :icon="Setting" circle title="设置" @click="openSettings" />
+        <el-button :icon="Setting" circle :title="t('app.settings')" @click="openSettings" />
       </div>
     </header>
 
     <div class="main">
       <ConnectionList v-if="!sidebarCollapsed" :hosts="hosts" v-bind="listHandlers" />
       <div v-else class="sidebar-collapsed">
-        <el-button text circle :icon="DArrowRight" title="展开主机列表" @click="sidebarCollapsed = false" />
+        <el-button text circle :icon="DArrowRight" :title="t('app.expandSidebar')" @click="sidebarCollapsed = false" />
       </div>
 
       <div class="session-area">
@@ -764,21 +772,21 @@ async function duplicate(host) {
             <!-- 连接中:乐观 tab 状态页,拨号完成后原地切换为终端 -->
             <div v-if="s.status === 'connecting'" class="conn-state">
               <el-icon :size="30" class="is-loading conn-spin"><Loading /></el-icon>
-              <div class="conn-title">正在连接 {{ s.connType === 'telnet' ? s.host : `${s.username}@${s.host}` }}</div>
-              <div v-if="s.jumpName" class="conn-sub">经跳板机 {{ s.jumpName }}</div>
+              <div class="conn-title">{{ t('app.connecting', { target: s.connType === 'telnet' ? s.host : `${s.username}@${s.host}` }) }}</div>
+              <div v-if="s.jumpName" class="conn-sub">{{ t('app.viaJump', { name: s.jumpName }) }}</div>
               <div class="conn-elapsed">
-                已等待 {{ s.elapsed || 0 }} 秒<span v-if="(s.elapsed || 0) >= 5">,仍在等待远端响应…</span>
+                {{ t('app.waited', { n: s.elapsed || 0 }) }}<span v-if="(s.elapsed || 0) >= 5">{{ t('app.stillWaiting') }}</span>
               </div>
-              <el-button size="small" @click="removeSession(s.id)">取消</el-button>
+              <el-button size="small" @click="removeSession(s.id)">{{ t('common.cancel') }}</el-button>
             </div>
             <!-- 连接失败:完整错误信息落页 + 重试 -->
             <div v-else-if="s.status === 'failed'" class="conn-state">
               <el-icon :size="34" class="conn-fail-icon"><CircleCloseFilled /></el-icon>
-              <div class="conn-title">连接失败</div>
-              <div class="conn-err">{{ s.errMsg }}</div>
+              <div class="conn-title">{{ t('app.connectFailed') }}</div>
+              <div class="conn-err">{{ s.restoreFailed ? t('app.sessionInvalid') : s.errMsg }}</div>
               <div class="conn-actions">
-                <el-button type="primary" size="small" @click="retryConnect(s)">重试</el-button>
-                <el-button size="small" @click="removeSession(s.id)">关闭</el-button>
+                <el-button type="primary" size="small" @click="retryConnect(s)">{{ t('common.retry') }}</el-button>
+                <el-button size="small" @click="removeSession(s.id)">{{ t('common.close') }}</el-button>
               </div>
             </div>
             <template v-else>
@@ -800,24 +808,24 @@ async function duplicate(host) {
                 :icon="Promotion"
                 @click="togglePanel(s, 'fwd')"
               >
-                代理 / 转发
+                {{ t('app.proxyForward') }}
               </el-button>
               <el-button
                 size="small"
                 :type="s.hostOpen ? 'primary' : 'default'"
                 plain
                 :icon="Monitor"
-                title="主机详情:架构/CPU/内存/磁盘/进程"
+                :title="t('app.hostDetailTitle')"
                 @click="togglePanel(s, 'host')"
               >
-                主机详情
+                {{ t('app.hostDetail') }}
               </el-button>
               <el-button
                 size="small"
                 :type="s.dockerOpen ? 'primary' : 'default'"
                 plain
                 :icon="Box"
-                title="Docker 管理:容器列表/inspect"
+                :title="t('app.dockerTitle')"
                 @click="togglePanel(s, 'docker')"
               >
                 Docker
@@ -827,7 +835,7 @@ async function duplicate(host) {
                 :type="s.k8sOpen ? 'primary' : 'default'"
                 plain
                 :icon="Connection"
-                title="K8s 管理:集群状态/Pod 列表/日志/终端(远端需 kubectl)"
+                :title="t('app.k8sTitle')"
                 @click="togglePanel(s, 'k8s')"
               >
                 K8s
@@ -838,23 +846,23 @@ async function duplicate(host) {
                 size="small"
                 plain
                 :icon="ArrowRight"
-                title="左右分屏:当前终端拆分为两个终端"
+                :title="t('app.splitVTitle')"
                 @click="splitTerm(s, 'v')"
               >
-                左右分屏
+                {{ t('app.splitV') }}
               </el-button>
               <el-button
                 size="small"
                 plain
                 :icon="ArrowDown"
-                title="上下分屏:当前终端拆分为两个终端"
+                :title="t('app.splitHTitle')"
                 @click="splitTerm(s, 'h')"
               >
-                上下分屏
+                {{ t('app.splitH') }}
               </el-button>
               <span class="muted toolbar-info">
                 {{ s.connType === 'telnet' ? s.host : `${s.username}@${s.host}` }}
-                <template v-if="s.jumpName">(经跳板机 {{ s.jumpName }})</template>
+                <template v-if="s.jumpName">{{ t('app.viaJumpShort', { name: s.jumpName }) }}</template>
               </span>
             </div>
             <div class="session-content">
@@ -870,7 +878,7 @@ async function duplicate(host) {
               <div
                 class="splitter"
                 v-if="s.sftpOpen || s.fwdOpen || s.hostOpen || s.dockerOpen || s.k8sOpen"
-                title="拖动调整宽度(30%-70%)"
+                :title="t('app.dragResize')"
                 @mousedown="startResize(s, $event)"
               ></div>
               <div
@@ -889,7 +897,7 @@ async function duplicate(host) {
           </el-tab-pane>
           <el-tab-pane v-for="ct in containerTabs" :key="ct.id" :name="ct.id">
             <template #label>
-              <span class="tab-label">{{ ct.label }}</span>
+              <span class="tab-label">{{ ct.type === 'settings' ? t('app.tabSettingsLabel') : ct.label }}</span>
             </template>
             <div v-if="ct.type === 'settings'" class="session-content">
               <SettingsPanel @close="closeContainerTab('settings-tab')" />
@@ -912,7 +920,7 @@ async function duplicate(host) {
             </div>
             <div v-else-if="ct.type === 'pod-shell'" class="session-content" style="background: #0d1117; flex-direction: column">
               <div class="container-shell-header">
-                <span>Pod 终端 · {{ ct.pod }} <span class="muted">({{ ct.ns }} · {{ ct.host }})</span></span>
+                <span>{{ t('app.podTerminal', { pod: ct.pod }) }} <span class="muted">({{ ct.ns }} · {{ ct.host }})</span></span>
               </div>
               <TerminalPane
                 :sid="ct.parentSid"
@@ -924,7 +932,7 @@ async function duplicate(host) {
             </div>
             <div v-else class="session-content" style="background: #0d1117; flex-direction: column">
               <div class="container-shell-header">
-                <span>容器终端 · {{ ct.name }} <span class="muted">({{ ct.host }})</span></span>
+                <span>{{ t('app.containerTerminal', { name: ct.name }) }} <span class="muted">({{ ct.host }})</span></span>
               </div>
               <TerminalPane
                 :sid="ct.parentSid"
@@ -948,32 +956,33 @@ async function duplicate(host) {
         :style="{ left: tabMenu.x + 'px', top: tabMenu.y + 'px' }"
         @contextmenu.prevent
       >
-        <div class="ctx-item" @click.stop="onTabMenuAction('self')">关闭当前标签</div>
+        <div class="ctx-item" @click.stop="onTabMenuAction('self')">{{ t('app.ctxCloseCurrent') }}</div>
         <div
           class="ctx-item"
           :class="{ disabled: tabMenuCtx.total <= 1 }"
           @click.stop="tabMenuCtx.total > 1 && onTabMenuAction('others')"
         >
-          关闭其他标签
+          {{ t('app.ctxCloseOthers') }}
         </div>
         <div
           class="ctx-item"
           :class="{ disabled: tabMenuCtx.left <= 0 }"
           @click.stop="tabMenuCtx.left > 0 && onTabMenuAction('left')"
         >
-          关闭左侧标签
+          {{ t('app.ctxCloseLeft') }}
         </div>
         <div
           class="ctx-item"
           :class="{ disabled: tabMenuCtx.right <= 0 }"
           @click.stop="tabMenuCtx.right > 0 && onTabMenuAction('right')"
         >
-          关闭右侧标签
+          {{ t('app.ctxCloseRight') }}
         </div>
-        <div class="ctx-item danger" @click.stop="onTabMenuAction('all')">关闭全部标签</div>
+        <div class="ctx-item danger" @click.stop="onTabMenuAction('all')">{{ t('app.ctxCloseAll') }}</div>
       </div>
     </teleport>
 
     <HostModal v-model="modalVisible" :host="editingHost" :hosts="hosts" @saved="loadHosts" />
   </div>
+  </el-config-provider>
 </template>

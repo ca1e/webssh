@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { hostInfo, metricsWSUrl } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -107,9 +108,9 @@ function fmtUptime(seconds) {
   const h = Math.floor((seconds % 86400) / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const parts = []
-  if (d > 0) parts.push(d + ' 天')
-  if (h > 0) parts.push(h + ' 小时')
-  parts.push(m + ' 分钟')
+  if (d > 0) parts.push(t('hp.days', { d }))
+  if (h > 0) parts.push(t('hp.hours', { h }))
+  parts.push(t('hp.minutes', { m }))
   return parts.join(' ')
 }
 
@@ -146,9 +147,9 @@ const forwardUnknown = computed(() => {
   return !c || (!c.allow_tcp_forwarding && !c.disable_forwarding && c.source === '')
 })
 const forwardLabel = computed(() => {
-  if (forwardDisabled.value) return '已禁止'
-  if (forwardUnknown.value) return '未知'
-  return '允许'
+  if (forwardDisabled.value) return t('hp.forwardDisabled')
+  if (forwardUnknown.value) return t('hp.forwardUnknown')
+  return t('hp.forwardAllowed')
 })
 const forwardColor = computed(() => {
   if (forwardDisabled.value) return '#f56c6c'
@@ -157,8 +158,8 @@ const forwardColor = computed(() => {
 })
 const sshConfigSourceLabel = computed(() => {
   const src = info.value?.ssh_config?.source
-  if (src === 'sshd -T') return '· 生效配置'
-  if (src === 'config-file') return '· 配置文件(非生效值)'
+  if (src === 'sshd -T') return t('hp.srcEffective')
+  if (src === 'config-file') return t('hp.srcConfigFile')
   return ''
 })
 
@@ -177,13 +178,13 @@ onBeforeUnmount(() => {
 <template>
   <div class="host-panel">
     <div class="panel-title">
-      主机详情 · {{ session.name }}
+      {{ t('app.hostDetail') }} · {{ session.name }}
       <span class="ws-dot" :class="wsStatus"></span>
       <span class="muted" style="font-weight: 400; font-size: 12px">
-        {{ wsStatus === 'open' ? '实时监控已连接' : wsStatus === 'connecting' ? '监控连接中…' : '监控断开,重连中…' }}
+        {{ wsStatus === 'open' ? t('hp.wsOpen') : wsStatus === 'connecting' ? t('hp.wsConnecting') : t('hp.wsClosed') }}
       </span>
       <span style="flex: 1"></span>
-      <el-button size="small" :icon="Refresh" :loading="refreshing" title="手动刷新" @click="manualRefresh" />
+      <el-button size="small" :icon="Refresh" :loading="refreshing" :title="t('common.manualRefresh')" @click="manualRefresh" />
     </div>
 
     <div v-if="infoError" class="muted" style="padding: 0 12px">{{ infoError }}</div>
@@ -192,15 +193,15 @@ onBeforeUnmount(() => {
       <!-- 基础信息 + 资源使用 -->
       <div class="metric-cards">
         <div class="metric-card">
-          <div class="card-title">基础信息</div>
-          <div class="metric-row"><span class="muted">主机名</span><span>{{ info.hostname }}</span></div>
-          <div class="metric-row"><span class="muted">系统</span><span>{{ info.os || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">内核</span><span>{{ info.kernel || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">架构</span><span>{{ info.arch || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">运行时长</span><span>{{ fmtUptime(metrics?.uptime_seconds) }}</span></div>
+          <div class="card-title">{{ t('hp.basic') }}</div>
+          <div class="metric-row"><span class="muted">{{ t('hp.hostname') }}</span><span>{{ info.hostname }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('hp.os') }}</span><span>{{ info.os || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('hp.kernel') }}</span><span>{{ info.kernel || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('hp.arch') }}</span><span>{{ info.arch || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('hp.uptime') }}</span><span>{{ fmtUptime(metrics?.uptime_seconds) }}</span></div>
         </div>
         <div class="metric-card">
-          <div class="card-title">资源使用</div>
+          <div class="card-title">{{ t('hp.resources') }}</div>
           <div class="prog-row">
             <span class="prog-label">CPU</span>
             <el-progress :percentage="metrics?.cpu_pct || 0" :format="(p) => parseFloat(p.toFixed(2)) + '%'" :color="memColor(metrics?.cpu_pct || 0)" :stroke-width="12" style="flex:1" />
@@ -223,7 +224,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="metric-row" v-if="info.cpu_model">
             <span class="muted">CPU</span>
-            <span style="font-size: 12px; text-align: right">{{ info.cpu_model }} ({{ info.cpu_cores }}核)</span>
+            <span style="font-size: 12px; text-align: right">{{ info.cpu_model }} {{ t('hp.coresSuffix', { n: info.cpu_cores }) }}</span>
           </div>
         </div>
       </div>
@@ -231,25 +232,25 @@ onBeforeUnmount(() => {
       <!-- SSH 配置 + 实时监控(两列并排) -->
       <div class="metric-cards">
         <div class="metric-card">
-          <div class="card-title">SSH 配置 <span class="muted" style="font-weight:400; font-size:11px">{{ sshConfigSourceLabel }}</span></div>
+          <div class="card-title">{{ t('hp.sshConfig') }} <span class="muted" style="font-weight:400; font-size:11px">{{ sshConfigSourceLabel }}</span></div>
           <div class="metric-row">
-            <span class="muted">TCP 转发</span>
+            <span class="muted">{{ t('hp.tcpForward') }}</span>
             <span :style="{ color: forwardColor, fontWeight: 600 }">{{ forwardLabel }}</span>
           </div>
           <div class="metric-row"><span class="muted">DisableForwarding</span><span>{{ info.ssh_config?.disable_forwarding || '-' }}</span></div>
           <div class="metric-row"><span class="muted">PermitOpen</span><span>{{ info.ssh_config?.permit_open || 'any' }}</span></div>
-          <div class="metric-row"><span class="muted">Agent 转发</span><span>{{ info.ssh_config?.allow_agent_forwarding || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('hp.agentForward') }}</span><span>{{ info.ssh_config?.allow_agent_forwarding || '-' }}</span></div>
         </div>
 
         <div class="metric-card">
-          <div class="card-title">实时监控 <span class="muted" style="font-weight:400; font-size:11px">5s 推送</span></div>
+          <div class="card-title">{{ t('hp.realtime') }} <span class="muted" style="font-weight:400; font-size:11px">{{ t('hp.push5s') }}</span></div>
           <div class="sparkline-row">
             <span class="spark-label">CPU</span>
             <svg class="sparkline" viewBox="0 0 120 30" preserveAspectRatio="none">
               <polyline :points="cpuPoints" fill="none" stroke="#409eff" stroke-width="1.5" />
             </svg>
             <span class="spark-cur">{{ metrics?.cpu_pct?.toFixed(1) ?? '-' }}%</span>
-            <span class="spark-peak">峰值 {{ peaks.cpu.toFixed(1) }}%</span>
+            <span class="spark-peak">{{ t('hp.peak', { v: peaks.cpu.toFixed(1) + '%' }) }}</span>
           </div>
           <div class="sparkline-row">
             <span class="spark-label">MEM</span>
@@ -257,7 +258,7 @@ onBeforeUnmount(() => {
               <polyline :points="memPoints" fill="none" stroke="#67c23a" stroke-width="1.5" />
             </svg>
             <span class="spark-cur">{{ metrics?.mem_pct?.toFixed(1) ?? '-' }}%</span>
-            <span class="spark-peak">峰值 {{ peaks.mem.toFixed(1) }}%</span>
+            <span class="spark-peak">{{ t('hp.peak', { v: peaks.mem.toFixed(1) + '%' }) }}</span>
           </div>
           <div class="sparkline-row">
             <span class="spark-label">NET↑</span>
@@ -265,7 +266,7 @@ onBeforeUnmount(() => {
               <polyline :points="netTxPoints" fill="none" stroke="#e6a23c" stroke-width="1.5" />
             </svg>
             <span class="spark-cur">{{ fmtBps(metrics?.net_tx_bps) }}</span>
-            <span class="spark-peak">峰值 {{ fmtBps(peaks.netTx) }}</span>
+            <span class="spark-peak">{{ t('hp.peak', { v: fmtBps(peaks.netTx) }) }}</span>
           </div>
           <div class="sparkline-row">
             <span class="spark-label">NET↓</span>
@@ -273,44 +274,44 @@ onBeforeUnmount(() => {
               <polyline :points="netRxPoints" fill="none" stroke="#409eff" stroke-width="1.5" />
             </svg>
             <span class="spark-cur">{{ fmtBps(metrics?.net_rx_bps) }}</span>
-            <span class="spark-peak">峰值 {{ fmtBps(peaks.netRx) }}</span>
+            <span class="spark-peak">{{ t('hp.peak', { v: fmtBps(peaks.netRx) }) }}</span>
           </div>
         </div>
       </div>
 
       <!-- 磁盘 -->
       <div class="metric-card">
-        <div class="card-title">磁盘</div>
-        <el-table :data="info.disks" size="small" style="width: 100%" empty-text="无磁盘数据">
-          <el-table-column prop="device" label="设备" min-width="100" show-overflow-tooltip />
-          <el-table-column prop="fs_type" label="类型" width="70" />
-          <el-table-column prop="size" label="大小" width="65" />
-          <el-table-column prop="used" label="已用" width="65" />
-          <el-table-column prop="avail" label="可用" width="65" />
-          <el-table-column label="使用率" width="80">
+        <div class="card-title">{{ t('hp.disks') }}</div>
+        <el-table :data="info.disks" size="small" style="width: 100%" :empty-text="t('hp.noDisks')">
+          <el-table-column prop="device" :label="t('hp.colDevice')" min-width="100" show-overflow-tooltip />
+          <el-table-column prop="fs_type" :label="t('common.colType')" width="70" />
+          <el-table-column prop="size" :label="t('common.colSize')" width="65" />
+          <el-table-column prop="used" :label="t('hp.colUsed')" width="65" />
+          <el-table-column prop="avail" :label="t('hp.colAvail')" width="65" />
+          <el-table-column :label="t('hp.colUsePct')" width="80">
             <template #default="{ row }">
               <span :style="{ color: row.use_num > 90 ? '#f56c6c' : row.use_num > 80 ? '#e6a23c' : 'inherit' }">
                 {{ row.use_pct }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column prop="mount" label="挂载点" min-width="100" show-overflow-tooltip />
+          <el-table-column prop="mount" :label="t('hp.colMount')" min-width="100" show-overflow-tooltip />
         </el-table>
       </div>
 
       <!-- 进程 TOP20 -->
       <div class="metric-card">
-        <div class="card-title">进程 TOP20 (CPU)</div>
-        <el-table :data="info.processes" size="small" style="width: 100%" empty-text="无进程数据">
-          <el-table-column prop="user" label="用户" width="70" />
+        <div class="card-title">{{ t('hp.topProcesses') }}</div>
+        <el-table :data="info.processes" size="small" style="width: 100%" :empty-text="t('hp.noProcesses')">
+          <el-table-column prop="user" :label="t('hp.colUser')" width="70" />
           <el-table-column prop="pid" label="PID" width="70" />
           <el-table-column label="CPU%" width="65">
             <template #default="{ row }">{{ row.cpu_pct.toFixed(1) }}%</template>
           </el-table-column>
-          <el-table-column label="内存%" width="65">
+          <el-table-column :label="t('hp.colMemPct')" width="65">
             <template #default="{ row }">{{ row.mem_pct.toFixed(1) }}%</template>
           </el-table-column>
-          <el-table-column prop="command" label="命令" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="command" :label="t('hp.colCommand')" min-width="180" show-overflow-tooltip />
         </el-table>
       </div>
     </template>

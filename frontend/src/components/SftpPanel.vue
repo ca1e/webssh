@@ -34,6 +34,7 @@ import {
   transfersWSUrl,
 } from '../api'
 import { onCwd } from '../cwdBus'
+import { t } from '../i18n'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -72,9 +73,16 @@ function makePane(id, kind, label) {
 }
 
 // 上面板:当前会话远程;下面板:本机或另一台已连接主机(双远程模式)
-const remote = makePane('top', 'remote', '远程主机')
-const local = makePane('bottom', 'local', '本机')
+// label 仅用于双远程模式下记录下方面板对应会话名,显示名统一走 paneLabel()
+const remote = makePane('top', 'remote', '')
+const local = makePane('bottom', 'local', '')
 const panes = computed(() => [remote, local])
+
+// 面板显示名:本机/远程为界面文案(随语言切换),双远程下方面板显示会话名
+function paneLabel(pane) {
+  if (pane.kind === 'local') return t('sftp.localPane')
+  return pane.id === 'top' ? t('sftp.remotePane') : pane.label || pane.sid
+}
 
 // 面板对应的会话 id(local 面板为本机时为 null)
 function paneSid(pane) {
@@ -148,7 +156,7 @@ function switchBottom(v) {
   if (v === 'local') {
     local.kind = 'local'
     local.sid = null
-    local.label = '本机'
+    local.label = ''
     load(local, '')
     return
   }
@@ -234,7 +242,7 @@ async function syncCwd() {
   }
   // 对方会话已断开时,下面板切回本机
   if (local.kind === 'remote' && local.sid && !sessionOptions.value.some((x) => x.id === local.sid)) {
-    ElMessage.warning('对方会话已断开,下方面板已切回本机')
+    ElMessage.warning(t('sftp.peerDisconnected'))
     switchBottom('local')
   }
 }
@@ -279,7 +287,7 @@ const dualRemote = computed(() => local.kind === 'remote')
 async function submitTransfer(srcPane, dstPane) {
   if (!srcPane.selected.length) return
   if (!dstPane.path) {
-    ElMessage.warning('请先在目标面板进入目标目录')
+    ElMessage.warning(t('sftp.warnTargetDir'))
     return
   }
   srcPane.transferring = true
@@ -301,9 +309,9 @@ async function submitTransfer(srcPane, dstPane) {
   }
   srcPane.transferring = false
   if (failMsg) {
-    ElMessage.error({ message: `加入传输队列失败:${failMsg}`, duration: 6000, showClose: true })
+    ElMessage.error({ message: t('sftp.enqueueFailed', { msg: failMsg }), duration: 6000, showClose: true })
   } else {
-    ElMessage.success(`已加入传输队列,共 ${ok} 项`)
+    ElMessage.success(t('sftp.enqueued', { n: ok }))
   }
 }
 
@@ -375,11 +383,11 @@ function taskPct(t) {
   return Math.min(100, Math.round((t.done / t.total) * 100))
 }
 
-function statusText(t) {
-  if (t.status === 'done') return '已完成'
-  if (t.status === 'canceled') return '已取消'
-  if (t.status === 'failed') return '失败'
-  return '传输中'
+function statusText(task) {
+  if (task.status === 'done') return t('sftp.done')
+  if (task.status === 'canceled') return t('sftp.canceled')
+  if (task.status === 'failed') return t('sftp.failed')
+  return t('sftp.transferring')
 }
 
 // 删除传输记录;运行中的任务会先被后端取消再移除
@@ -399,9 +407,9 @@ async function removeItems(pane) {
   const names = pane.selected.map((s) => s.name).join('、')
   try {
     await ElMessageBox.confirm(
-      `确认删除${pane.label} ${pane.path} 下的:${names}?目录会递归删除,不可恢复。`,
-      '删除确认',
-      { type: 'warning', confirmButtonText: '删除', confirmButtonClass: 'el-button--danger' }
+      t('sftp.deleteConfirm', { pane: paneLabel(pane), path: pane.path, names }),
+      t('common.deleteConfirmTitle'),
+      { type: 'warning', confirmButtonText: t('common.delete'), confirmButtonClass: 'el-button--danger' }
     )
   } catch {
     return
@@ -416,9 +424,9 @@ async function removeItems(pane) {
     }
   }
   if (fails.length) {
-    ElMessage.error({ message: `删除失败:${fails.join(';')}`, duration: 6000, showClose: true })
+    ElMessage.error({ message: t('sftp.deleteFailed', { msgs: fails.join(';') }), duration: 6000, showClose: true })
   } else {
-    ElMessage.success('删除成功')
+    ElMessage.success(t('sftp.deleteOk'))
   }
   load(pane, pane.path)
 }
@@ -449,7 +457,7 @@ function startHResize(e) {
 function openNameModal(mode, pane) {
   if (mode === 'rename') {
     if (pane.selected.length !== 1) {
-      ElMessage.warning('重命名需先恰好选中一项')
+      ElMessage.warning(t('sftp.renameNeedOne'))
       return
     }
     ui.modalMode = 'rename'
@@ -468,25 +476,25 @@ async function submitNameModal() {
   const pane = paneOf(ui.modalPane)
   const name = ui.name.trim()
   if (!name) {
-    ElMessage.error('名称不能为空')
+    ElMessage.error(t('sftp.nameEmpty'))
     return
   }
   if ([...name].length > 64) {
-    ElMessage.error('名称长度不能超过 64 个字符')
+    ElMessage.error(t('sftp.nameTooLong'))
     return
   }
   if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
-    ElMessage.error('名称不能包含路径分隔符')
+    ElMessage.error(t('sftp.nameInvalid'))
     return
   }
   try {
     if (ui.modalMode === 'mkdir') {
       const p = joinPath(pane.path, name)
       await paneApi(pane).mkdir(p)
-      ElMessage.success(`目录已创建:${name}`)
+      ElMessage.success(t('sftp.dirCreated', { name }))
     } else {
       await paneApi(pane).rename(ui.oldPath, name)
-      ElMessage.success('重命名成功')
+      ElMessage.success(t('sftp.renameOk'))
     }
     ui.modalVisible = false
     load(pane, pane.path)
@@ -560,7 +568,7 @@ onBeforeUnmount(() => {
     <div class="panel-title">
       SFTP · {{ session.name }}
       <span class="muted" style="font-weight: 400">{{ session.username }}@{{ session.host }}</span>
-      <span v-if="dualRemote" class="dual-badge">双远程模式</span>
+      <span v-if="dualRemote" class="dual-badge">{{ t('sftp.dualMode') }}</span>
     </div>
 
     <template v-for="(pane, i) in panes" :key="pane.id">
@@ -570,15 +578,15 @@ onBeforeUnmount(() => {
         :style="pane.id === 'top' ? { flex: 'none', height: ui.remotePct + '%' } : {}"
       >
         <div class="pane-header">
-          <span v-if="pane.id === 'top'" class="pane-label" :class="pane.kind">{{ pane.label }}</span>
+          <span v-if="pane.id === 'top'" class="pane-label" :class="pane.kind">{{ paneLabel(pane) }}</span>
           <el-select
             v-else
             v-model="bottomTarget"
             size="small"
             class="target-select"
-            title="选择下方面板目标:本机或其他已连接主机"
+            :title="t('sftp.targetSelectTitle')"
           >
-            <el-option value="local" label="本机" />
+            <el-option value="local" :label="t('sftp.localPane')" />
             <el-option
               v-for="s in sessionOptions"
               :key="s.id"
@@ -589,14 +597,14 @@ onBeforeUnmount(() => {
           <el-button
             size="small"
             :icon="ArrowUp"
-            title="上一级目录"
+            :title="t('sftp.parentDir')"
             :disabled="parentDir(pane.path) === pane.path"
             @click="load(pane, parentDir(pane.path))"
           />
           <el-button
             size="small"
             :icon="House"
-            title="回到主目录"
+            :title="t('sftp.homeDir')"
             @click="load(pane, '~')"
           />
           <div class="path-wrap">
@@ -604,14 +612,14 @@ onBeforeUnmount(() => {
               v-model="pane.pathInput"
               class="path-input"
               size="small"
-              placeholder="输入目录后回车"
+              :placeholder="t('sftp.pathPlaceholder')"
               @keyup.enter="enterPath(pane)"
             >
               <template #suffix>
                 <el-icon
                   class="path-dd-trigger"
                   :class="{ active: ui.dd === pane.id }"
-                  title="子目录与上级目录"
+                  :title="t('sftp.ddTitle')"
                   @click.stop="toggleDd(pane)"
                 >
                   <CaretBottom />
@@ -642,13 +650,13 @@ onBeforeUnmount(() => {
               >
                 {{ p }}
               </div>
-              <div v-if="!subDirs(pane).length" class="dd-item disabled">(无子目录)</div>
+              <div v-if="!subDirs(pane).length" class="dd-item disabled">{{ t('sftp.noSubdirs') }}</div>
             </div>
           </div>
           <el-button
             size="small"
             :icon="Refresh"
-            title="刷新"
+            :title="t('common.refresh')"
             :loading="pane.loading"
             @click="refresh(pane)"
           />
@@ -662,10 +670,10 @@ onBeforeUnmount(() => {
               :icon="Bottom"
               :loading="pane.transferring"
               :disabled="!pane.selected.length"
-              :title="dualRemote ? '发送选中项到下方面板当前目录(后台任务)' : '下载选中项到下方本机当前目录(后台任务)'"
+              :title="dualRemote ? t('sftp.sendDownTitle') : t('sftp.downloadTitle')"
               @click="download"
             >
-              {{ dualRemote ? '发送到下方' : '下载' }}
+              {{ dualRemote ? t('sftp.sendDown') : t('sftp.download') }}
             </el-button>
           </template>
           <template v-else>
@@ -675,17 +683,17 @@ onBeforeUnmount(() => {
               :icon="Top"
               :loading="pane.transferring"
               :disabled="!pane.selected.length"
-              :title="dualRemote ? '发送选中项到上方面板当前目录(后台任务)' : '上传选中项到上方远程当前目录(后台任务)'"
+              :title="dualRemote ? t('sftp.sendUpTitle') : t('sftp.uploadTitle')"
               @click="upload"
             >
-              {{ dualRemote ? '发送到上方' : '上传' }}
+              {{ dualRemote ? t('sftp.sendUp') : t('sftp.upload') }}
             </el-button>
           </template>
           <el-button size="small" :icon="FolderAdd" @click="openNameModal('mkdir', pane)">
-            新建文件夹
+            {{ t('sftp.mkdir') }}
           </el-button>
           <el-button size="small" :icon="Edit" @click="openNameModal('rename', pane)">
-            重命名
+            {{ t('sftp.rename') }}
           </el-button>
           <el-button
             size="small"
@@ -694,15 +702,15 @@ onBeforeUnmount(() => {
             :disabled="!pane.selected.length"
             @click="removeItems(pane)"
           >
-            删除
+            {{ t('common.delete') }}
           </el-button>
           <el-checkbox
             v-model="pane.showHidden"
             size="small"
             class="show-hidden"
-            title="显示 . 开头的隐藏文件"
+            :title="t('sftp.showHiddenTitle')"
           >
-            显示全部文件
+            {{ t('sftp.showHidden') }}
           </el-checkbox>
         </div>
 
@@ -722,12 +730,12 @@ onBeforeUnmount(() => {
             v-loading="pane.loading"
             size="small"
             height="100%"
-            empty-text="空目录"
+            :empty-text="t('sftp.emptyDir')"
             @selection-change="(s) => (pane.selected = s)"
             @row-dblclick="(row) => openRow(pane, row)"
           >
             <el-table-column type="selection" width="36" />
-            <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip>
+            <el-table-column prop="name" :label="t('common.colName')" min-width="150" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="file-name" :class="{ 'is-file': !row.is_dir }">
                   <el-icon><Folder v-if="row.is_dir" /><Document v-else /></el-icon>
@@ -735,53 +743,53 @@ onBeforeUnmount(() => {
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="大小" width="80">
+            <el-table-column :label="t('common.colSize')" width="80">
               <template #default="{ row }">{{ fmtSize(row.size, row.is_dir) }}</template>
             </el-table-column>
-            <el-table-column label="用户/分组" width="100" show-overflow-tooltip>
+            <el-table-column :label="t('sftp.colOwner')" width="100" show-overflow-tooltip>
               <template #default="{ row }">
                 <span :title="`${row.owner} / ${row.group}`">{{ row.owner }} / {{ row.group }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="mode" label="权限" width="100" />
+            <el-table-column prop="mode" :label="t('sftp.colMode')" width="100" />
           </el-table>
         </div>
       </div>
       <div
         v-if="i === 0"
         class="hsplitter"
-        title="拖动调整上下面板高度(20%-80%)"
+        :title="t('sftp.dragHeight')"
         @mousedown="startHResize"
       ></div>
     </template>
 
     <!-- 传输任务进度(WS 推送) -->
     <div class="relay-tasks" v-if="transferTasks.length">
-      <div v-for="t in transferTasks.slice(0, 6)" :key="t.id" class="relay-task">
+      <div v-for="task in transferTasks.slice(0, 6)" :key="task.id" class="relay-task">
         <span
           class="rt-route"
-          :title="`${t.source_path} → ${t.target_name}:${t.target_path}`"
+          :title="`${task.source_path} → ${task.target_name}:${task.target_path}`"
         >
-          {{ t.source_name }} → {{ t.target_name }} · {{ t.target_path }}
+          {{ task.source_name }} → {{ task.target_name }} · {{ task.target_path }}
         </span>
         <el-progress
           class="rt-bar"
-          :percentage="taskPct(t)"
+          :percentage="taskPct(task)"
           :stroke-width="8"
-          :status="t.status === 'done' ? 'success' : t.status === 'failed' ? 'exception' : undefined"
+          :status="task.status === 'done' ? 'success' : task.status === 'failed' ? 'exception' : undefined"
         />
-        <span class="rt-size">{{ fmtSize(t.done, false) }}/{{ fmtSize(t.total, false) }}</span>
-        <span class="rt-status" :class="t.status" :title="t.error || ''">{{ statusText(t) }}</span>
+        <span class="rt-size">{{ fmtSize(task.done, false) }}/{{ fmtSize(task.total, false) }}</span>
+        <span class="rt-status" :class="task.status" :title="task.error || ''">{{ statusText(task) }}</span>
         <el-button
-          v-if="t.status === 'running'"
+          v-if="task.status === 'running'"
           size="small"
           type="danger"
           link
-          @click="cancelTransfer(t.id)"
+          @click="cancelTransfer(task.id)"
         >
-          取消
+          {{ t('common.cancel') }}
         </el-button>
-        <el-icon class="rt-delete" title="删除记录" @click="removeTask(t)">
+        <el-icon class="rt-delete" :title="t('sftp.deleteRecord')" @click="removeTask(task)">
           <Close />
         </el-icon>
       </div>
@@ -790,26 +798,26 @@ onBeforeUnmount(() => {
     <!-- 新建文件夹 / 重命名 弹窗(名称最长 64 字符) -->
     <el-dialog
       v-model="ui.modalVisible"
-      :title="ui.modalMode === 'mkdir' ? '新建文件夹' : '重命名'"
+      :title="ui.modalMode === 'mkdir' ? t('sftp.mkdir') : t('sftp.rename')"
       width="420px"
       :close-on-click-modal="false"
       append-to-body
       @opened="nameInputRef?.focus?.()"
     >
       <div class="muted" style="margin-bottom: 8px">
-        位置:{{ paneOf(ui.modalPane).path }}
+        {{ t('sftp.location', { path: paneOf(ui.modalPane).path }) }}
       </div>
       <el-input
         ref="nameInputRef"
         v-model="ui.name"
         maxlength="64"
         show-word-limit
-        placeholder="请输入名称(最长 64 个字符)"
+        :placeholder="t('sftp.namePlaceholder')"
         @keyup.enter="submitNameModal"
       />
       <template #footer>
-        <el-button @click="ui.modalVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitNameModal">确定</el-button>
+        <el-button @click="ui.modalVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="submitNameModal">{{ t('common.ok') }}</el-button>
       </template>
     </el-dialog>
   </div>

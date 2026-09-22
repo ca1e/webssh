@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createHost, listKeys, testHost, updateHost } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -36,14 +37,14 @@ const isTelnet = computed(() => form.conn_type === 'telnet')
 // 校验按连接方式裁剪:telnet 仅 名称/主机/端口
 const rules = computed(() => {
   const base = {
-    name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
-    host: [{ required: true, message: '请输入主机 IP', trigger: 'blur' }],
-    port: [{ required: true, message: '请输入端口', trigger: 'blur' }],
+    name: [{ required: true, message: t('host.ruleName'), trigger: 'blur' }],
+    host: [{ required: true, message: t('host.ruleHost'), trigger: 'blur' }],
+    port: [{ required: true, message: t('host.rulePort'), trigger: 'blur' }],
   }
   if (!isTelnet.value) {
-    base.username = [{ required: true, message: '请输入用户名', trigger: 'blur' }]
+    base.username = [{ required: true, message: t('host.ruleUsername'), trigger: 'blur' }]
     if (form.auth_type === 'key') {
-      base.key_path = [{ required: true, message: '请选择或输入私钥路径', trigger: 'change' }]
+      base.key_path = [{ required: true, message: t('host.ruleKeyPath'), trigger: 'change' }]
     }
   }
   return base
@@ -120,10 +121,10 @@ async function doSave() {
   try {
     if (isEdit.value) {
       await updateHost(props.host.id, payload())
-      ElMessage.success('连接已更新')
+      ElMessage.success(t('host.updated'))
     } else {
       await createHost(payload())
-      ElMessage.success('连接已保存')
+      ElMessage.success(t('host.saved'))
     }
     emit('saved')
     emit('update:modelValue', false)
@@ -136,7 +137,7 @@ async function doTest() {
   testing.value = true
   try {
     const res = await testHost(payload())
-    ElMessage.success(`连接成功(${res.elapsed_ms} ms)`)
+    ElMessage.success(t('host.testOk', { ms: res.elapsed_ms }))
   } catch (e) {
     ElMessage.error({ message: e.message, duration: 6000, showClose: true })
   } finally {
@@ -148,57 +149,57 @@ async function doTest() {
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="isEdit ? '编辑连接' : '新建连接'"
+    :title="isEdit ? t('host.editTitle') : t('host.createTitle')"
     width="520px"
     :close-on-click-modal="false"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
-      <el-form-item label="连接方式">
+      <el-form-item :label="t('host.connType')">
         <el-select v-model="form.conn_type" style="width: 160px">
           <el-option label="SSH" value="ssh" />
           <el-option label="Telnet" value="telnet" />
         </el-select>
       </el-form-item>
-      <el-form-item label="名称" prop="name">
-        <el-input v-model="form.name" placeholder="例如:生产 Web 服务器" />
+      <el-form-item :label="t('host.nameLabel')" prop="name">
+        <el-input v-model="form.name" :placeholder="t('host.namePlaceholder')" />
       </el-form-item>
-      <el-form-item label="主机 IP" prop="host">
-        <el-input v-model="form.host" placeholder="例如:192.168.1.10" />
+      <el-form-item :label="t('host.hostIp')" prop="host">
+        <el-input v-model="form.host" :placeholder="t('host.ipPlaceholder')" />
       </el-form-item>
-      <el-form-item label="端口" prop="port">
+      <el-form-item :label="t('host.port')" prop="port">
         <el-input-number v-model="form.port" :min="1" :max="65535" controls-position="right" />
       </el-form-item>
       <template v-if="!isTelnet">
-      <el-form-item label="用户名" prop="username">
+      <el-form-item :label="t('host.username')" prop="username">
         <el-input v-model="form.username" />
       </el-form-item>
-      <el-form-item label="认证类型">
+      <el-form-item :label="t('host.authType')">
         <el-radio-group v-model="form.auth_type">
-          <el-radio-button value="password">密码</el-radio-button>
-          <el-radio-button value="key">私钥</el-radio-button>
+          <el-radio-button value="password">{{ t('host.password') }}</el-radio-button>
+          <el-radio-button value="key">{{ t('host.privateKey') }}</el-radio-button>
         </el-radio-group>
       </el-form-item>
 
       <template v-if="form.auth_type === 'password'">
-        <el-form-item label="密码">
+        <el-form-item :label="t('host.password')">
           <el-input
             v-model="form.password"
             type="password"
             show-password
-            :placeholder="isEdit && host?.has_password ? '已保存,留空保持不变' : '请输入密码'"
+            :placeholder="isEdit && host?.has_password ? t('host.savedKeepEmpty') : t('host.pwdPlaceholder')"
           />
         </el-form-item>
       </template>
 
       <template v-else>
-        <el-form-item label="私钥" prop="key_path">
+        <el-form-item :label="t('host.privateKey')" prop="key_path">
           <el-select
             v-model="form.key_path"
             filterable
             allow-create
             default-first-option
-            placeholder="选择本地密钥或输入路径"
+            :placeholder="t('host.keyPlaceholder')"
             style="width: 100%"
           >
             <el-option
@@ -209,24 +210,24 @@ async function doTest() {
             />
           </el-select>
           <div class="muted" style="font-size: 12px; line-height: 1.6">
-            来自本机 ~/.ssh,可手动输入其他路径(支持 ~)
+            {{ t('host.keyHint') }}
           </div>
         </el-form-item>
-        <el-form-item label="私钥口令">
+        <el-form-item :label="t('host.passphrase')">
           <el-input
             v-model="form.passphrase"
             type="password"
             show-password
-            :placeholder="isEdit && host?.has_passphrase ? '已保存,留空保持不变' : '无口令可留空'"
+            :placeholder="isEdit && host?.has_passphrase ? t('host.savedKeepEmpty') : t('host.passphrasePlaceholder')"
           />
         </el-form-item>
       </template>
 
-      <el-form-item label="跳板机">
+      <el-form-item :label="t('host.jump')">
         <el-select
           v-model="form.jump_id"
           clearable
-          placeholder="可选:经其他已保存主机中转"
+          :placeholder="t('host.jumpPlaceholder')"
           style="width: 100%"
         >
           <el-option
@@ -239,14 +240,14 @@ async function doTest() {
       </el-form-item>
       </template>
 
-      <el-form-item label="分组">
+      <el-form-item :label="t('host.group')">
         <el-select
           v-model="form.group"
           filterable
           allow-create
           default-first-option
           clearable
-          placeholder="可选,如:生产环境"
+          :placeholder="t('host.groupPlaceholder')"
           style="width: 100%"
         >
           <el-option
@@ -257,36 +258,36 @@ async function doTest() {
           />
         </el-select>
         <div class="muted" style="font-size: 12px; line-height: 1.6">
-          用于在主机列表中分组归类,留空归入"未分组"
+          {{ t('host.groupHint') }}
         </div>
       </el-form-item>
 
       <template v-if="!isTelnet">
-      <el-form-item label="启动命令">
+      <el-form-item :label="t('host.startupCmd')">
         <el-input
           v-model="form.startup_cmd"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 3 }"
-          placeholder="可选,连接后自动执行,如:cd /opt/app && export FOO=bar"
+          :placeholder="t('host.startupPlaceholder')"
         />
         <div class="muted" style="font-size: 12px; line-height: 1.6">
-          连接建立后先执行此命令(无交互终端),执行失败不影响连接
+          {{ t('host.startupHint') }}
         </div>
       </el-form-item>
 
       <el-form-item label="Follow SSH path">
         <el-switch v-model="form.follow_ssh_path" />
         <div class="muted" style="font-size: 12px; line-height: 1.6; margin-left: 12px">
-          勾选后注入 shell 钩子,SFTP 面板自动跟随终端 cd;该模式不显示 Last login/MOTD 横幅
+          {{ t('host.followHint') }}
         </div>
       </el-form-item>
       </template>
     </el-form>
 
     <template #footer>
-      <el-button :loading="testing" @click="doTest">测试连接</el-button>
-      <el-button @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="doSave">保存</el-button>
+      <el-button :loading="testing" @click="doTest">{{ t('host.test') }}</el-button>
+      <el-button @click="emit('update:modelValue', false)">{{ t('common.cancel') }}</el-button>
+      <el-button type="primary" :loading="saving" @click="doSave">{{ t('common.save') }}</el-button>
     </template>
   </el-dialog>
 </template>

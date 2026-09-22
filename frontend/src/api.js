@@ -1,6 +1,7 @@
 // 后端 API 封装:统一 JSON 请求、{error} 错误契约与 WebSocket 地址。
 
 import { reactive } from 'vue'
+import { t } from './i18n'
 
 // 启动密码锁的全局状态:任意请求收到 401 即置 locked,由 App.vue 渲染锁屏。
 export const authState = reactive({ locked: false, hasPassword: true })
@@ -18,7 +19,7 @@ async function request(method, url, body, opts = {}) {
   } catch (e) {
     // 用户主动取消(signal 中止)时保留 AbortError 语义,供调用方区分
     if (e?.name === 'AbortError') throw e
-    throw new Error('无法连接后端服务')
+    throw new Error(t('api.cannotConnect'))
   }
   let data = null
   try {
@@ -30,7 +31,7 @@ async function request(method, url, body, opts = {}) {
     if (res.status === 401 && url !== '/api/auth/unlock' && url !== '/api/auth/status') {
       authState.locked = true
     }
-    throw new Error((data && data.error) || `请求失败(HTTP ${res.status})`)
+    throw new Error((data && data.error) || t('api.requestFailed', { code: res.status }))
   }
   return data
 }
@@ -70,7 +71,7 @@ export async function exportBundle(mode, password) {
       body: JSON.stringify({ mode, password }),
     })
   } catch {
-    throw new Error('无法连接后端服务')
+    throw new Error(t('api.cannotConnect'))
   }
   if (!res.ok) {
     if (res.status === 401) authState.locked = true
@@ -80,7 +81,7 @@ export async function exportBundle(mode, password) {
     } catch {
       /* 非 JSON 错误体 */
     }
-    throw new Error(msg || `导出失败(HTTP ${res.status})`)
+    throw new Error(msg || t('api.exportFailedHttp', { code: res.status }))
   }
   const dispo = res.headers.get('Content-Disposition') || ''
   const filename =
@@ -99,7 +100,7 @@ export async function importBundle(file, password) {
   try {
     res = await fetch('/api/hosts/import', { method: 'POST', body: fd })
   } catch {
-    throw new Error('无法连接后端服务')
+    throw new Error(t('api.cannotConnect'))
   }
   let data = null
   try {
@@ -109,7 +110,7 @@ export async function importBundle(file, password) {
   }
   if (!res.ok) {
     if (res.status === 401) authState.locked = true
-    throw new Error((data && data.error) || `导入失败(HTTP ${res.status})`)
+    throw new Error((data && data.error) || t('api.importFailedHttp', { code: res.status }))
   }
   return data
 }

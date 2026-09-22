@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Document, Refresh, Search, VideoPlay } from '@element-plus/icons-vue'
 import { dockerContainers, dockerInfo, dockerInspect } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -36,8 +37,10 @@ const drawerVisible = ref(false)
 const inspectLoading = ref(false)
 const inspectData = ref(null) // 解析后的 inspect[0] 对象
 const inspectRaw = ref('')
-const inspectTitle = ref('')
+const inspectError = ref('')
 const inspectRow = ref(null) // 当前查看的容器行
+// 抽屉标题:容器名 · 详情(详情文案随语言切换)
+const inspectTitle = computed(() => (inspectRow.value ? `${inspectRow.value.name} · ${t('docker.detail')}` : ''))
 
 let timer = null
 
@@ -77,11 +80,11 @@ async function refresh() {
 // inspect + 分卡片解析
 async function openInspect(row) {
   inspectRow.value = row
-  inspectTitle.value = `${row.name} · 详情`
   drawerVisible.value = true
   inspectLoading.value = true
   inspectData.value = null
   inspectRaw.value = ''
+  inspectError.value = ''
   try {
     const raw = await dockerInspect(props.session.id, row.id)
     let parsed = raw
@@ -93,7 +96,7 @@ async function openInspect(row) {
     }
     inspectRaw.value = typeof raw === 'string' ? raw : JSON.stringify(parsed, null, 2)
   } catch (e) {
-    inspectRaw.value = '加载失败: ' + e.message
+    inspectError.value = e.message
   } finally {
     inspectLoading.value = false
   }
@@ -171,10 +174,10 @@ const inspectResources = computed(() => {
   const cpuQuota = hc.CpuQuota || 0
   const cpuPeriod = hc.CpuPeriod || 0
   return {
-    memory: memBytes > 0 ? fmtBytes(memBytes) : '无限制',
-    memorySwap: memSwapBytes > 0 ? fmtBytes(memSwapBytes) : memSwapBytes === 0 ? '无限制' : '等于内存',
-    nanoCpus: nanoCpus > 0 ? (nanoCpus / 1e9).toFixed(2) + ' 核' : '-',
-    cpuQuota: cpuQuota > 0 && cpuPeriod > 0 ? (cpuQuota / cpuPeriod).toFixed(2) + ' 核' : '无限制',
+    memory: memBytes > 0 ? fmtBytes(memBytes) : t('docker.unlimited'),
+    memorySwap: memSwapBytes > 0 ? fmtBytes(memSwapBytes) : memSwapBytes === 0 ? t('docker.unlimited') : t('docker.sameAsMemory'),
+    nanoCpus: nanoCpus > 0 ? (nanoCpus / 1e9).toFixed(2) + ' ' + t('docker.cores') : '-',
+    cpuQuota: cpuQuota > 0 && cpuPeriod > 0 ? (cpuQuota / cpuPeriod).toFixed(2) + ' ' + t('docker.cores') : t('docker.unlimited'),
   }
 })
 
@@ -241,18 +244,18 @@ function fmtAgo(createdStr) {
   const d = new Date(createdStr)
   if (isNaN(d)) return createdStr
   const diff = Date.now() - d.getTime()
-  if (diff < 0) return '刚刚'
+  if (diff < 0) return t('docker.justNow')
   const sec = Math.floor(diff / 1000)
-  if (sec < 60) return '刚刚'
+  if (sec < 60) return t('docker.justNow')
   const min = Math.floor(sec / 60)
-  if (min < 60) return `${min} 分钟前`
+  if (min < 60) return t('docker.minAgo', { n: min })
   const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr} 小时前`
+  if (hr < 24) return t('docker.hourAgo', { n: hr })
   const day = Math.floor(hr / 24)
-  if (day < 30) return `${day} 天前`
+  if (day < 30) return t('docker.dayAgo', { n: day })
   const mon = Math.floor(day / 30)
-  if (mon < 12) return `${mon} 个月前`
-  return `${Math.floor(mon / 12)} 年前`
+  if (mon < 12) return t('docker.monthAgo', { n: mon })
+  return t('docker.yearAgo', { n: Math.floor(mon / 12) })
 }
 
 function fmtBytes(bytes) {
@@ -288,11 +291,11 @@ onBeforeUnmount(() => {
         v-model="filterText"
         size="small"
         :icon="Search"
-        placeholder="过滤容器名"
+        :placeholder="t('docker.filter')"
         clearable
         style="width: 160px"
       />
-      <el-button size="small" :icon="Refresh" :loading="loading" title="手动刷新" @click="manualRefresh" />
+      <el-button size="small" :icon="Refresh" :loading="loading" :title="t('common.manualRefresh')" @click="manualRefresh" />
     </div>
 
     <div v-if="error" class="panel-error">
@@ -304,25 +307,25 @@ onBeforeUnmount(() => {
       <div class="metric-cards" v-if="info">
         <div class="metric-card">
           <div class="card-title">Docker</div>
-          <div class="metric-row"><span class="muted">Client 版本</span><span style="font-family:monospace">{{ info.client_version || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">Server 版本</span><span style="font-family:monospace">{{ info.server_version || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">API 版本</span><span style="font-family:monospace">{{ info.api_version || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">存储驱动</span><span style="font-family:monospace">{{ info.storage_driver || '-' }}</span></div>
-          <div class="metric-row"><span class="muted">系统</span><span style="font-family:monospace;font-size:11px" :title="info.os">{{ info.os_type }} {{ info.arch }}</span></div>
-          <div class="metric-row"><span class="muted">容器</span><span style="font-family:monospace">{{ info.running }} 运行 / {{ info.containers }} 总数</span></div>
-          <div class="metric-row"><span class="muted">镜像</span><span style="font-family:monospace">{{ info.images }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.clientVersion') }}</span><span style="font-family:monospace">{{ info.client_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.serverVersion') }}</span><span style="font-family:monospace">{{ info.server_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.apiVersion') }}</span><span style="font-family:monospace">{{ info.api_version || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.storageDriver') }}</span><span style="font-family:monospace">{{ info.storage_driver || '-' }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.os') }}</span><span style="font-family:monospace;font-size:11px" :title="info.os">{{ info.os_type }} {{ info.arch }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.containers') }}</span><span style="font-family:monospace">{{ t('docker.containerStat', { running: info.running, total: info.containers }) }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.images') }}</span><span style="font-family:monospace">{{ info.images }}</span></div>
         </div>
         <div class="metric-card">
           <div class="card-title">Compose</div>
-          <div class="metric-row"><span class="muted">命令</span><span style="font-family:monospace">{{ compose?.command || '未安装' }}</span></div>
-          <div class="metric-row" v-if="compose?.version"><span class="muted">版本</span><span style="font-family:monospace">{{ compose.version }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.command') }}</span><span style="font-family:monospace">{{ compose?.command || t('docker.notInstalled') }}</span></div>
+          <div class="metric-row" v-if="compose?.version"><span class="muted">{{ t('docker.version') }}</span><span style="font-family:monospace">{{ compose.version }}</span></div>
           <template v-if="compose?.projects?.length">
             <div class="metric-row" v-for="p in compose.projects" :key="p.name">
               <span style="font-family:monospace;font-size:12px">{{ p.name }}</span>
               <span class="muted" style="font-size:11px" :title="p.config_files">{{ p.status }}</span>
             </div>
           </template>
-          <div class="metric-row" v-else><span class="muted">项目</span><span class="muted">无运行中的项目</span></div>
+          <div class="metric-row" v-else><span class="muted">{{ t('docker.projects') }}</span><span class="muted">{{ t('docker.noProjects') }}</span></div>
         </div>
       </div>
 
@@ -332,25 +335,25 @@ onBeforeUnmount(() => {
           v-loading="loading"
           size="small"
           style="width: 100%"
-          empty-text="无容器"
+          :empty-text="t('docker.empty')"
           @row-click="openInspect"
         >
-          <el-table-column prop="name" label="容器名" min-width="120" show-overflow-tooltip />
+          <el-table-column prop="name" :label="t('docker.colName')" min-width="120" show-overflow-tooltip />
           <el-table-column label="ID" width="110">
             <template #default="{ row }">
               <span style="font-family: monospace; font-size: 11px">{{ row.short_id }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="镜像" min-width="130" show-overflow-tooltip>
+          <el-table-column :label="t('docker.colImage')" min-width="130" show-overflow-tooltip>
             <template #default="{ row }">
               <span class="image-link">{{ row.image }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="ports" label="端口" min-width="100" show-overflow-tooltip />
-          <el-table-column label="创建时间" width="100">
+          <el-table-column prop="ports" :label="t('docker.colPorts')" min-width="100" show-overflow-tooltip />
+          <el-table-column :label="t('docker.colCreated')" width="100">
             <template #default="{ row }">{{ fmtAgo(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column :label="t('common.colStatus')" width="100">
             <template #default="{ row }">
               <el-tag :type="statusType(row.state)" size="small">{{ row.status }}</el-tag>
             </template>
@@ -358,53 +361,53 @@ onBeforeUnmount(() => {
         </el-table>
       </div>
       <div class="muted" style="padding: 0 10px; font-size: 11px">
-        点击容器行查看详情 · 5s 自动刷新(无动画)
+        {{ t('docker.hint') }}
       </div>
     </template>
     <template v-else-if="!loading">
       <div class="empty-state">
-        <el-empty description="Docker 未安装或未运行" :image-size="60" />
+        <el-empty :description="t('docker.notAvailable')" :image-size="60" />
       </div>
     </template>
 
     <!-- inspect 抽屉:分卡片 -->
     <el-drawer v-model="drawerVisible" :title="inspectTitle" size="55%" :append-to-body="true">
-      <div v-if="inspectLoading" class="muted" style="padding: 20px">加载中…</div>
+      <div v-if="inspectLoading" class="muted" style="padding: 20px">{{ t('common.loading') }}</div>
       <template v-else>
         <!-- 顶部操作按钮 -->
         <div class="inspect-actions">
           <el-button size="small" type="primary" :icon="VideoPlay" @click="openLogs">
-            查看日志
+            {{ t('docker.viewLogs') }}
           </el-button>
           <el-button size="small" type="success" :icon="Document" @click="openShell">
-            打开 Shell
+            {{ t('docker.openShell') }}
           </el-button>
         </div>
 
         <!-- 镜像 + 状态(一行两列) -->
         <div class="inspect-row2">
           <div class="inspect-card" v-if="inspectImage">
-            <div class="inspect-card-title">镜像</div>
-            <div class="metric-row"><span class="muted">镜像名</span><span>{{ inspectImage.image }}</span></div>
-            <div class="metric-row"><span class="muted">容器 ID</span><span style="font-family:monospace;font-size:11px">{{ inspectImage.id }}</span></div>
-            <div class="metric-row"><span class="muted">创建时间</span><span>{{ inspectImage.created }}</span></div>
+            <div class="inspect-card-title">{{ t('docker.image') }}</div>
+            <div class="metric-row"><span class="muted">{{ t('docker.imageName') }}</span><span>{{ inspectImage.image }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.containerId') }}</span><span style="font-family:monospace;font-size:11px">{{ inspectImage.id }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.colCreated') }}</span><span>{{ inspectImage.created }}</span></div>
             <div class="metric-row" v-if="inspectImage.entrypoint !== '[]'"><span class="muted">Entrypoint</span><span style="font-family:monospace;font-size:11px">{{ inspectImage.entrypoint }}</span></div>
             <div class="metric-row" v-if="inspectImage.cmd !== '[]'"><span class="muted">Cmd</span><span style="font-family:monospace;font-size:11px">{{ inspectImage.cmd }}</span></div>
           </div>
           <div class="inspect-card" v-if="inspectState">
-            <div class="inspect-card-title">容器状态</div>
+            <div class="inspect-card-title">{{ t('docker.state') }}</div>
             <div class="metric-row">
-              <span class="muted">当前状态</span>
+              <span class="muted">{{ t('docker.currentState') }}</span>
               <el-tag :type="statusType(inspectState.status)" size="small">{{ inspectState.status }}</el-tag>
             </div>
-            <div class="metric-row"><span class="muted">本次启动</span><span>{{ inspectState.startedAt }}</span></div>
-            <div class="metric-row"><span class="muted">重启次数</span><span style="font-family:monospace">{{ inspectState.restartCount }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.startedAt') }}</span><span>{{ inspectState.startedAt }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.restartCount') }}</span><span style="font-family:monospace">{{ inspectState.restartCount }}</span></div>
           </div>
         </div>
 
         <!-- 端口卡片 -->
         <div class="inspect-card" v-if="inspectPorts.length">
-          <div class="inspect-card-title">端口映射</div>
+          <div class="inspect-card-title">{{ t('docker.portMapping') }}</div>
           <div v-for="p in inspectPorts" :key="p.port" class="metric-row">
             <span style="font-family:monospace">{{ p.port }}</span>
             <span class="muted">→ {{ p.host }}</span>
@@ -413,7 +416,7 @@ onBeforeUnmount(() => {
 
         <!-- 挂载卡片 -->
         <div class="inspect-card" v-if="inspectMounts.length">
-          <div class="inspect-card-title">挂载</div>
+          <div class="inspect-card-title">{{ t('docker.mounts') }}</div>
           <div v-for="(m, idx) in inspectMounts" :key="idx" class="inspect-mount-row">
             <span style="font-family:monospace;font-size:11px">{{ m.source }}</span>
             <span class="muted">→</span>
@@ -424,34 +427,34 @@ onBeforeUnmount(() => {
 
         <!-- 网络卡片 -->
         <div class="inspect-card" v-if="inspectNetworks.length">
-          <div class="inspect-card-title">网络</div>
+          <div class="inspect-card-title">{{ t('docker.networks') }}</div>
           <div v-for="n in inspectNetworks" :key="n.name" style="margin-bottom: 6px">
             <div style="font-weight:600;font-size:12px">{{ n.name }}</div>
             <div class="metric-row"><span class="muted">IP</span><span style="font-family:monospace">{{ n.ip }}</span></div>
-            <div class="metric-row"><span class="muted">网关</span><span style="font-family:monospace">{{ n.gateway }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.gateway') }}</span><span style="font-family:monospace">{{ n.gateway }}</span></div>
           </div>
         </div>
 
         <!-- 重启策略 + 资源限制(一行两列) -->
         <div class="inspect-row2">
           <div class="inspect-card" v-if="inspectRestart">
-            <div class="inspect-card-title">重启策略</div>
-            <div class="metric-row"><span class="muted">策略</span><span style="font-family:monospace">{{ inspectRestart.name }}</span></div>
-            <div class="metric-row" v-if="inspectRestart.name === 'on-failure'"><span class="muted">最大重试</span><span style="font-family:monospace">{{ inspectRestart.maxRetry }}</span></div>
-            <div class="metric-row"><span class="muted">退出自动删除</span><span>{{ inspectRestart.autoRemove ? '是' : '否' }}</span></div>
+            <div class="inspect-card-title">{{ t('docker.restartPolicy') }}</div>
+            <div class="metric-row"><span class="muted">{{ t('docker.policy') }}</span><span style="font-family:monospace">{{ inspectRestart.name }}</span></div>
+            <div class="metric-row" v-if="inspectRestart.name === 'on-failure'"><span class="muted">{{ t('docker.maxRetry') }}</span><span style="font-family:monospace">{{ inspectRestart.maxRetry }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.autoRemove') }}</span><span>{{ inspectRestart.autoRemove ? t('common.yes') : t('common.no') }}</span></div>
           </div>
           <div class="inspect-card" v-if="inspectResources">
-            <div class="inspect-card-title">资源限制</div>
-            <div class="metric-row"><span class="muted">内存</span><span style="font-family:monospace">{{ inspectResources.memory }}</span></div>
+            <div class="inspect-card-title">{{ t('docker.resources') }}</div>
+            <div class="metric-row"><span class="muted">{{ t('docker.memory') }}</span><span style="font-family:monospace">{{ inspectResources.memory }}</span></div>
             <div class="metric-row"><span class="muted">Swap</span><span style="font-family:monospace">{{ inspectResources.memorySwap }}</span></div>
             <div class="metric-row"><span class="muted">CPU</span><span style="font-family:monospace">{{ inspectResources.nanoCpus }}</span></div>
-            <div class="metric-row"><span class="muted">CPU配额</span><span style="font-family:monospace">{{ inspectResources.cpuQuota }}</span></div>
+            <div class="metric-row"><span class="muted">{{ t('docker.cpuQuota') }}</span><span style="font-family:monospace">{{ inspectResources.cpuQuota }}</span></div>
           </div>
         </div>
 
         <!-- 环境变量卡片 -->
         <div class="inspect-card" v-if="inspectEnv.length">
-          <div class="inspect-card-title">环境变量 ({{ inspectEnv.length }})</div>
+          <div class="inspect-card-title">{{ t('docker.env', { n: inspectEnv.length }) }}</div>
           <div v-for="e in inspectEnv" :key="e.key" class="env-row">
             <span class="env-key">{{ e.key }}</span>
             <span class="env-val">{{ e.value }}</span>
@@ -460,10 +463,10 @@ onBeforeUnmount(() => {
 
         <!-- 运行配置卡片 -->
         <div class="inspect-card" v-if="inspectRunConfig">
-          <div class="inspect-card-title">运行配置</div>
-          <div class="metric-row"><span class="muted">网络模式</span><span style="font-family:monospace">{{ inspectRunConfig.networkMode }}</span></div>
-          <div class="metric-row"><span class="muted">工作目录</span><span style="font-family:monospace">{{ inspectRunConfig.workingDir }}</span></div>
-          <div class="metric-row"><span class="muted">运行用户</span><span style="font-family:monospace">{{ inspectRunConfig.user }}</span></div>
+          <div class="inspect-card-title">{{ t('docker.runConfig') }}</div>
+          <div class="metric-row"><span class="muted">{{ t('docker.networkMode') }}</span><span style="font-family:monospace">{{ inspectRunConfig.networkMode }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.workingDir') }}</span><span style="font-family:monospace">{{ inspectRunConfig.workingDir }}</span></div>
+          <div class="metric-row"><span class="muted">{{ t('docker.runUser') }}</span><span style="font-family:monospace">{{ inspectRunConfig.user }}</span></div>
         </div>
 
         <!-- Labels 卡片 -->
@@ -477,8 +480,8 @@ onBeforeUnmount(() => {
 
         <!-- 原始 JSON -->
         <div class="inspect-card">
-          <div class="inspect-card-title">原始 JSON</div>
-          <pre class="inspect-pre">{{ inspectRaw }}</pre>
+          <div class="inspect-card-title">{{ t('docker.rawJson') }}</div>
+          <pre class="inspect-pre">{{ inspectError ? t('docker.loadFailed', { msg: inspectError }) : inspectRaw }}</pre>
         </div>
       </template>
     </el-drawer>

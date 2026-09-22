@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { addForward, deleteForward, hostInfo, k8sResources, listForwards } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -113,7 +114,7 @@ async function startForward(row, port) {
       k8s_target: target,
       k8s_port: p,
     })
-    ElMessage.success(`已启动:127.0.0.1:${res.listen_port} → ${k8sNs.value}/${target}:${p}`)
+    ElMessage.success(t('fwd.started', { port: res.listen_port, target: `${k8sNs.value}/${target}:${p}` }))
     refresh()
   } catch (e) {
     ElMessage.error(e.message)
@@ -126,9 +127,9 @@ async function addK8s() {
     const target = k8sForm.target.trim()
     const port = k8sForm.port.trim()
     const listen = Number(k8sForm.listen_port) || 0
-    if (!ns) throw new Error('命名空间不能为空')
-    if (!target) throw new Error('目标不能为空(如 svc/my-app)')
-    if (!port) throw new Error('服务端口不能为空')
+    if (!ns) throw new Error(t('fwd.errNsEmpty'))
+    if (!target) throw new Error(t('fwd.errTargetEmpty'))
+    if (!port) throw new Error(t('fwd.errPortEmpty'))
     const res = await addForward(props.session.id, {
       type: 'k8s',
       listen_port: listen,
@@ -137,7 +138,7 @@ async function addK8s() {
       k8s_port: port,
     })
     k8sForm.listen_port = ''
-    ElMessage.success(`K8s 转发已建立:127.0.0.1:${res.listen_port} → ${ns}/${target}:${port}`)
+    ElMessage.success(t('fwd.k8sEstablished', { port: res.listen_port, target: `${ns}/${target}:${port}` }))
     refresh()
   } catch (e) {
     ElMessage.error(e.message)
@@ -160,16 +161,16 @@ function fmtB(n) {
 function toPort(v, name) {
   const n = Number(v)
   if (!Number.isInteger(n) || n < 1 || n > 65535) {
-    throw new Error(`${name} 必须是 1-65535 的整数`)
+    throw new Error(t('fwd.errPortRange', { name }))
   }
   return n
 }
 
 async function addLocal() {
   try {
-    const listen = toPort(localForm.listen_port, '监听端口')
-    const remotePort = toPort(localForm.remote_port, '目标端口')
-    if (!localForm.remote_host.trim()) throw new Error('目标主机不能为空')
+    const listen = toPort(localForm.listen_port, t('fwd.listenPort'))
+    const remotePort = toPort(localForm.remote_port, t('fwd.remotePort'))
+    if (!localForm.remote_host.trim()) throw new Error(t('fwd.errHostEmpty'))
     await addForward(props.session.id, {
       type: 'local',
       listen_port: listen,
@@ -180,7 +181,7 @@ async function addLocal() {
     localForm.listen_port = ''
     localForm.remote_host = ''
     localForm.remote_port = ''
-    ElMessage.success(`本地转发已建立:127.0.0.1:${listen}`)
+    ElMessage.success(t('fwd.localEstablished', { port: listen }))
     refresh()
   } catch (e) {
     ElMessage.error(e.message)
@@ -189,10 +190,10 @@ async function addLocal() {
 
 async function addSocks() {
   try {
-    const listen = toPort(socksPort.value, '监听端口')
+    const listen = toPort(socksPort.value, t('fwd.listenPort'))
     await addForward(props.session.id, { type: 'socks5', listen_port: listen, mode: socksMode.value })
     socksPort.value = ''
-    ElMessage.success(`SOCKS5 代理已启动:127.0.0.1:${listen}`)
+    ElMessage.success(t('fwd.socksStarted', { port: listen }))
     refresh()
   } catch (e) {
     ElMessage.error(e.message)
@@ -226,10 +227,7 @@ onUnmounted(() => clearInterval(pollTimer))
       :closable="false"
       style="flex: none"
     >
-      当前会话:{{ session.username }}@{{ session.host }}
-      <template v-if="session.jumpName">,经跳板机 {{ session.jumpName }} 中转</template>
-      <template v-else>,直连</template>
-      。所有监听仅绑定 127.0.0.1。
+      {{ t('fwd.currentSession', { target: `${session.username}@${session.host}` }) }}<template v-if="session.jumpName">{{ t('fwd.viaJumpRelay', { name: session.jumpName }) }}</template><template v-else>{{ t('fwd.direct') }}</template>{{ t('fwd.bindLocal') }}
     </el-alert>
 
     <el-alert
@@ -238,7 +236,10 @@ onUnmounted(() => clearInterval(pollTimer))
       :closable="false"
       style="flex: none"
     >
-      ⚠ 该主机 sshd 已禁止 TCP 转发(AllowTcpForwarding={{ sshConfig?.allow_tcp_forwarding || 'no' }}{{ sshConfig?.disable_forwarding === 'yes' ? ', DisableForwarding=yes' : '' }}),标准转发不可用;选择「自动」或「原始」模式即可绕过该限制(经 SSH 通道转发),下方的 K8s 服务转发也不受影响。
+      {{ t('fwd.forwardDisabled', {
+        tcp: sshConfig?.allow_tcp_forwarding || 'no',
+        dis: sshConfig?.disable_forwarding === 'yes' ? ', DisableForwarding=yes' : '',
+      }) }}
     </el-alert>
     <el-alert
       v-else-if="forwardUnknown"
@@ -246,20 +247,20 @@ onUnmounted(() => clearInterval(pollTimer))
       :closable="false"
       style="flex: none"
     >
-      无法确认 sshd 转发配置,转发可能不可用。
+      {{ t('fwd.forwardUnknown') }}
     </el-alert>
 
     <el-card class="forward-card" shadow="never">
       <template #header>
-        K8s 服务端口转发(kubectl port-forward)
-        <el-tag v-if="forwardDisabled" size="small" type="success" style="margin-left: 8px">不受 TCP 转发禁令影响</el-tag>
+        {{ t('fwd.k8sTitle') }}
+        <el-tag v-if="forwardDisabled" size="small" type="success" style="margin-left: 8px">{{ t('fwd.unaffectedByBan') }}</el-tag>
       </template>
 
       <div v-if="k8sAvailable === false" class="muted" style="font-size: 12px; margin-bottom: 8px">
-        未在目标主机检测到 kubectl(PATH 与登录环境均未找到),此功能需要主机上已部署 kubectl 且可访问集群。
+        {{ t('fwd.noKubectl') }}
       </div>
       <div v-else-if="k8sListError" class="muted" style="font-size: 12px; margin-bottom: 8px; color: var(--el-color-warning)">
-        资源列表获取异常:{{ k8sListError }}
+        {{ t('fwd.listError', { err: k8sListError }) }}
       </div>
 
       <div class="fwd-form">
@@ -268,16 +269,16 @@ onUnmounted(() => clearInterval(pollTimer))
           filterable
           allow-create
           default-first-option
-          placeholder="命名空间"
+          :placeholder="t('fwd.namespace')"
           style="width: 170px"
           @change="loadK8sTargets"
         >
           <el-option v-for="n in k8sNsList" :key="n" :label="n" :value="n" />
         </el-select>
         <el-button :loading="k8sLoading" :disabled="k8sAvailable === false" @click="loadK8sTargets">
-          刷新资源
+          {{ t('fwd.refreshResources') }}
         </el-button>
-        <span class="muted" style="font-size: 12px">本地端口自动分配;非 Running 的 Pod 不可启动</span>
+        <span class="muted" style="font-size: 12px">{{ t('fwd.autoPortHint') }}</span>
       </div>
 
       <el-table
@@ -285,24 +286,24 @@ onUnmounted(() => clearInterval(pollTimer))
         size="small"
         max-height="240"
         v-loading="k8sLoading"
-        empty-text="该命名空间下暂无 Service / Pod"
+        :empty-text="t('fwd.noTargets')"
         style="margin-top: 8px"
       >
-        <el-table-column label="类型" width="80">
+        <el-table-column :label="t('common.colType')" width="80">
           <template #default="{ row }">
             <el-tag size="small" :type="row.kind === 'svc' ? 'primary' : 'success'">
               {{ row.kind === 'svc' ? 'Service' : 'Pod' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip />
-        <el-table-column label="状态" width="90">
+        <el-table-column prop="name" :label="t('common.colName')" min-width="150" show-overflow-tooltip />
+        <el-table-column :label="t('common.colStatus')" width="90">
           <template #default="{ row }">
             <span v-if="row.status" :style="podNotReady(row) ? 'color: var(--el-color-danger)' : ''">{{ row.status }}</span>
             <span v-else class="muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="启动转发(点击端口)" min-width="260">
+        <el-table-column :label="t('fwd.startFwdCol')" min-width="260">
           <template #default="{ row }">
             <el-button
               v-for="p in row.ports"
@@ -315,10 +316,10 @@ onUnmounted(() => clearInterval(pollTimer))
             >
               {{ p.port }}<template v-if="p.name">({{ p.name }})</template>
             </el-button>
-            <span v-if="!row.ports || !row.ports.length" class="muted" style="font-size: 12px">无声明端口,</span>
-            <el-input v-model="row.custom" size="small" placeholder="自定义端口" style="width: 110px" />
+            <span v-if="!row.ports || !row.ports.length" class="muted" style="font-size: 12px">{{ t('fwd.noDeclaredPorts') }}</span>
+            <el-input v-model="row.custom" size="small" :placeholder="t('fwd.customPort')" style="width: 110px" />
             <el-button size="small" text type="primary" :disabled="!String(row.custom).trim()" @click="startForward(row, row.custom)">
-              启动
+              {{ t('fwd.start') }}
             </el-button>
           </template>
         </el-table-column>
@@ -327,102 +328,102 @@ onUnmounted(() => clearInterval(pollTimer))
       <el-table
         :data="k8sActive"
         size="small"
-        empty-text="暂无活动中的 K8s 转发"
+        :empty-text="t('fwd.noActive')"
         style="margin-top: 8px"
       >
-        <el-table-column label="目标" min-width="190">
+        <el-table-column :label="t('fwd.colTarget')" min-width="190">
           <template #default="{ row }">
             {{ row.namespace }}/{{ row.k8s_target }}:{{ row.k8s_port }}
           </template>
         </el-table-column>
-        <el-table-column label="本地地址" width="130">
+        <el-table-column :label="t('fwd.colLocalAddr')" width="130">
           <template #default="{ row }">127.0.0.1:{{ row.listen_port }}</template>
         </el-table-column>
-        <el-table-column label="连接" width="90">
+        <el-table-column :label="t('fwd.colConns')" width="90">
           <template #default="{ row }">
             <span :style="row.stats?.active > 0 ? 'color: var(--el-color-success); font-weight: 600' : ''">{{ row.stats?.active ?? 0 }}</span>
             / {{ row.stats?.total ?? 0 }}
           </template>
         </el-table-column>
-        <el-table-column label="流量 ↓/↑" width="130">
+        <el-table-column :label="t('fwd.colTraffic')" width="130">
           <template #default="{ row }">
             {{ fmtB(row.stats?.recv_bytes) }} / {{ fmtB(row.stats?.sent_bytes) }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column :label="t('common.colStatus')" width="90">
           <template #default="{ row }">
             <el-tooltip v-if="row.last_error" :content="row.last_error" placement="top">
-              <el-tag size="small" type="warning">最近报错</el-tag>
+              <el-tag size="small" type="warning">{{ t('fwd.lastErrorTag') }}</el-tag>
             </el-tooltip>
-            <el-tag v-else size="small" type="success">运行中</el-tag>
+            <el-tag v-else size="small" type="success">{{ t('fwd.running') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="70">
+        <el-table-column :label="t('common.colActions')" width="70">
           <template #default="{ row }">
-            <el-button size="small" type="danger" link @click="stop(row)">停止</el-button>
+            <el-button size="small" type="danger" link @click="stop(row)">{{ t('fwd.stop') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
 
       <el-collapse style="margin-top: 8px">
-        <el-collapse-item title="手动添加(命名端口 / 其他资源类型 / 指定本地端口)" name="adv">
+        <el-collapse-item :title="t('fwd.manualAdd')" name="adv">
           <div class="fwd-form">
-            <el-input v-model="k8sForm.namespace" placeholder="命名空间" style="width: 110px" />
-            <el-input v-model="k8sForm.target" placeholder="目标,如 svc/my-app" style="width: 150px" />
-            <el-input v-model="k8sForm.port" placeholder="服务端口/名" style="width: 100px" />
-            <el-input v-model="k8sForm.listen_port" placeholder="监听端口(空=自动)" style="width: 140px" />
-            <el-button type="primary" :disabled="k8sAvailable === false" @click="addK8s">添加转发</el-button>
+            <el-input v-model="k8sForm.namespace" :placeholder="t('fwd.namespace')" style="width: 110px" />
+            <el-input v-model="k8sForm.target" :placeholder="t('fwd.targetPlaceholder')" style="width: 150px" />
+            <el-input v-model="k8sForm.port" :placeholder="t('fwd.portPlaceholder')" style="width: 100px" />
+            <el-input v-model="k8sForm.listen_port" :placeholder="t('fwd.listenPlaceholder')" style="width: 140px" />
+            <el-button type="primary" :disabled="k8sAvailable === false" @click="addK8s">{{ t('fwd.addForward') }}</el-button>
           </div>
         </el-collapse-item>
       </el-collapse>
     </el-card>
 
     <el-card class="forward-card" shadow="never">
-      <template #header>本地端口转发(ssh -L)</template>
+      <template #header>{{ t('fwd.localTitle') }}</template>
       <div class="fwd-form">
-        <el-input v-model="localForm.listen_port" placeholder="监听端口" />
+        <el-input v-model="localForm.listen_port" :placeholder="t('fwd.listenPort')" />
         <span class="muted">→</span>
-        <el-input v-model="localForm.remote_host" placeholder="目标主机" style="width: 140px" />
-        <el-input v-model="localForm.remote_port" placeholder="目标端口" />
-        <el-select v-model="localMode" style="width: 110px" title="auto:探测 sshd 自动选择;raw:原始模式,仅经 SSH 通道转发,绕过 AllowTcpForwarding=no">
-          <el-option label="自动" value="auto" />
-          <el-option label="标准" value="std" />
-          <el-option label="原始" value="raw" />
+        <el-input v-model="localForm.remote_host" :placeholder="t('fwd.remoteHost')" style="width: 140px" />
+        <el-input v-model="localForm.remote_port" :placeholder="t('fwd.remotePort')" />
+        <el-select v-model="localMode" style="width: 110px" :title="t('fwd.modeTitle')">
+          <el-option :label="t('fwd.modeAuto')" value="auto" />
+          <el-option :label="t('fwd.modeStd')" value="std" />
+          <el-option :label="t('fwd.modeRaw')" value="raw" />
         </el-select>
-        <el-button type="primary" @click="addLocal">添加转发</el-button>
+        <el-button type="primary" @click="addLocal">{{ t('fwd.addForward') }}</el-button>
       </div>
       <div v-for="f in forwards.filter((x) => x.type === 'local')" :key="f.id" class="fwd-list-item">
         <span>
           127.0.0.1:{{ f.listen_port }} → {{ f.remote_host }}:{{ f.remote_port }}
-          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">原始</el-tag>
+          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">{{ t('fwd.rawTag') }}</el-tag>
         </span>
-        <el-button size="small" type="danger" link @click="stop(f)">停止</el-button>
+        <el-button size="small" type="danger" link @click="stop(f)">{{ t('fwd.stop') }}</el-button>
       </div>
       <div v-if="!forwards.some((x) => x.type === 'local')" class="muted" style="font-size: 12px">
-        暂无本地转发。添加后,访问本机监听端口的流量将经 SSH 隧道到达目标。
+        {{ t('fwd.noLocal') }}
       </div>
     </el-card>
 
     <el-card class="forward-card" shadow="never">
-      <template #header>SOCKS5 动态代理(ssh -D)</template>
+      <template #header>{{ t('fwd.socksTitle') }}</template>
       <div class="fwd-form">
-        <el-input v-model="socksPort" placeholder="监听端口" />
-        <el-select v-model="socksMode" style="width: 110px" title="auto:探测 sshd 自动选择;raw:原始模式,仅经 SSH 通道转发,绕过 AllowTcpForwarding=no">
-          <el-option label="自动" value="auto" />
-          <el-option label="标准" value="std" />
-          <el-option label="原始" value="raw" />
+        <el-input v-model="socksPort" :placeholder="t('fwd.listenPort')" />
+        <el-select v-model="socksMode" style="width: 110px" :title="t('fwd.modeTitle')">
+          <el-option :label="t('fwd.modeAuto')" value="auto" />
+          <el-option :label="t('fwd.modeStd')" value="std" />
+          <el-option :label="t('fwd.modeRaw')" value="raw" />
         </el-select>
-        <el-button type="primary" @click="addSocks">启动代理</el-button>
+        <el-button type="primary" @click="addSocks">{{ t('fwd.startProxy') }}</el-button>
       </div>
       <div v-for="f in forwards.filter((x) => x.type === 'socks5')" :key="f.id" class="fwd-list-item">
         <span>
           SOCKS5 127.0.0.1:{{ f.listen_port }}
-          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">原始</el-tag>
+          <el-tag v-if="f.mode === 'raw'" size="small" type="warning" style="margin-left: 4px">{{ t('fwd.rawTag') }}</el-tag>
         </span>
-        <el-button size="small" type="danger" link @click="stop(f)">停止</el-button>
+        <el-button size="small" type="danger" link @click="stop(f)">{{ t('fwd.stop') }}</el-button>
       </div>
       <div v-if="!forwards.some((x) => x.type === 'socks5')" class="muted" style="font-size: 12px">
-        启动后可将浏览器/程序代理指向 127.0.0.1:端口,流量经该 SSH 主机转出。
+        {{ t('fwd.noSocks') }}
       </div>
     </el-card>
   </div>

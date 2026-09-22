@@ -5,6 +5,7 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Lock } from '@element-plus/icons-vue'
 import { authSetup, authState, authUnlock } from '../api'
+import { t } from '../i18n'
 
 const emit = defineEmits(['unlocked'])
 
@@ -14,13 +15,13 @@ const form = reactive({ password: '', confirm: '' })
 
 const rules = computed(() => {
   const base = {
-    password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+    password: [{ required: true, message: t('lock.rulePassword'), trigger: 'blur' }],
   }
   if (!authState.hasPassword) {
     base.confirm = [
-      { required: true, message: '请再次输入密码', trigger: 'blur' },
+      { required: true, message: t('lock.ruleConfirm'), trigger: 'blur' },
       {
-        validator: (_, v, cb) => (v === form.password ? cb() : cb(new Error('两次输入不一致'))),
+        validator: (_, v, cb) => (v === form.password ? cb() : cb(new Error(t('lock.ruleMismatch')))),
         trigger: 'blur',
       },
     ]
@@ -60,7 +61,7 @@ async function submit() {
         <el-icon :size="52" class="lock-icon"><Lock /></el-icon>
         <div class="lock-title">WebSSH</div>
         <div class="lock-sub">
-          {{ authState.hasPassword ? '输入启动密码继续' : '首次使用,设置启动密码' }}
+          {{ authState.hasPassword ? t('lock.unlockSub') : t('lock.setupSub') }}
         </div>
       </div>
       <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent>
@@ -70,7 +71,7 @@ async function submit() {
             type="password"
             show-password
             autofocus
-            :placeholder="authState.hasPassword ? '启动密码' : '设置密码'"
+            :placeholder="authState.hasPassword ? t('lock.pwdPlaceholder') : t('lock.setupPlaceholder')"
             @keyup.enter="submit"
           />
         </el-form-item>
@@ -79,12 +80,12 @@ async function submit() {
             v-model="form.confirm"
             type="password"
             show-password
-            placeholder="再次输入密码"
+            :placeholder="t('lock.confirmPlaceholder')"
             @keyup.enter="submit"
           />
         </el-form-item>
         <el-button type="primary" size="large" class="lock-btn" :loading="busy" @click="submit">
-          {{ authState.hasPassword ? '解锁' : '完成' }}
+          {{ authState.hasPassword ? t('lock.unlock') : t('lock.finish') }}
         </el-button>
       </el-form>
     </div>

@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
+import { t } from '../i18n'
 
 const props = defineProps({
   wsUrl: { type: String, required: true },
@@ -93,14 +94,14 @@ onBeforeUnmount(() => {
 <template>
   <div class="container-logs-panel">
     <div class="panel-title">
-      容器日志 · {{ name }} <span class="muted" style="font-weight:400">({{ host }})</span>
+      {{ t('logs.title') }} · {{ name }} <span class="muted" style="font-weight:400">({{ host }})</span>
       <span class="ws-dot" :class="connected ? 'open' : 'closed'"></span>
-      <span class="muted" style="font-size: 11px">{{ connected ? '已连接' : '断开' }}</span>
+      <span class="muted" style="font-size: 11px">{{ connected ? t('logs.connected') : t('logs.disconnected') }}</span>
       <span style="flex: 1"></span>
-      <span class="muted" style="font-size: 11px">{{ logLineCount }} 行</span>
-      <el-checkbox v-model="autoScroll" size="small" title="自动滚动到底部">自动滚动</el-checkbox>
-      <el-button size="small" @click="clearLogs" title="清屏">清屏</el-button>
-      <el-button size="small" :icon="Refresh" title="重连" @click="manualReconnect" />
+      <span class="muted" style="font-size: 11px">{{ t('logs.lines', { n: logLineCount }) }}</span>
+      <el-checkbox v-model="autoScroll" size="small" :title="t('logs.autoScrollTitle')">{{ t('logs.autoScroll') }}</el-checkbox>
+      <el-button size="small" @click="clearLogs" :title="t('logs.clear')">{{ t('logs.clear') }}</el-button>
+      <el-button size="small" :icon="Refresh" :title="t('logs.reconnect')" @click="manualReconnect" />
     </div>
     <div ref="logBody" class="log-body"></div>
   </div>

@@ -480,6 +480,23 @@ body {
   margin-top: 12px;
 }
 
+/* 语言:下拉切换(flag + 语言自身名称形态) */
+.language-select {
+  width: 220px;
+  margin-top: 12px;
+}
+
+.language-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.language-flag {
+  font-size: 15px;
+  line-height: 1;
+}
+
 /* MCP:路径白名单 */
 .wl-toggle {
   display: flex;
@@ -565,6 +582,34 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 2px 12px;
+}
+
+/* MCP:接入/管理选择块(复用通用页选项卡样式,作为面板首个元素去掉上边距) */
+.mcp-mode {
+  margin-top: 0;
+}
+
+/* MCP:接入配置只读 JSON 文本框,右上角浮动复制按钮(顶部留白避让按钮) */
+.access-config {
+  position: relative;
+  margin-top: 12px;
+  max-width: 560px;
+}
+
+.access-config .el-textarea__inner {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding-top: 40px;
+  resize: none;
+  cursor: default;
+}
+
+.access-copy {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
 }
 
 /* 支持信息:灰底信息瓦片,等宽字体取值 */

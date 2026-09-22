@@ -1,17 +1,19 @@
 <script setup>
-import { reactive, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { DocumentCopy } from '@element-plus/icons-vue'
 import { settings } from '../settings'
 import { authChangePassword, listHosts, mcpGetSettings, mcpSaveSettings } from '../api'
+import { t, localeOptions } from '../i18n'
 
 defineEmits(['close'])
 
-// 左侧导航项;右侧面板按 activeMenu 渲染
+// 左侧导航项;右侧面板按 activeMenu 渲染(标题走 i18n)
 const menus = [
-  { key: 'general', label: '通用' },
-  { key: 'security', label: '安全' },
-  { key: 'mcp', label: 'MCP' },
-  { key: 'about', label: '关于' },
+  { key: 'general' },
+  { key: 'security' },
+  { key: 'mcp' },
+  { key: 'about' },
 ]
 const activeMenu = ref('general')
 
@@ -20,14 +22,14 @@ const pwdForm = reactive({ current: '', next: '', repeat: '' })
 const pwdSaving = ref(false)
 
 async function submitChangePassword() {
-  if (!pwdForm.current) return ElMessage.warning('请输入当前密码')
-  if (pwdForm.next.length < 4) return ElMessage.warning('新密码至少 4 位')
-  if (pwdForm.next !== pwdForm.repeat) return ElMessage.warning('两次输入的新密码不一致')
-  if (pwdForm.next === pwdForm.current) return ElMessage.warning('新密码不能与当前密码相同')
+  if (!pwdForm.current) return ElMessage.warning(t('settings.warnCurrentPwd'))
+  if (pwdForm.next.length < 4) return ElMessage.warning(t('settings.warnPwdShort'))
+  if (pwdForm.next !== pwdForm.repeat) return ElMessage.warning(t('settings.warnPwdMismatch'))
+  if (pwdForm.next === pwdForm.current) return ElMessage.warning(t('settings.warnPwdSame'))
   pwdSaving.value = true
   try {
     await authChangePassword(pwdForm.current, pwdForm.next)
-    ElMessage.success('密码已修改')
+    ElMessage.success(t('settings.pwdChanged'))
     pwdForm.current = pwdForm.next = pwdForm.repeat = ''
   } catch (e) {
     ElMessage.error(e.message)
@@ -38,18 +40,47 @@ async function submitChangePassword() {
 
 // ---------- 通用:主题 ----------
 const themeOptions = [
-  { value: 'light', title: '浅色', desc: '默认浅色配色。' },
-  { value: 'dark', title: '深色', desc: '深色配色,适合低光环境。' },
-  { value: 'system', title: '跟随系统', desc: '自动跟随系统深浅色,不支持时保持浅色。' },
+  { value: 'light', titleKey: 'settings.themeLight', descKey: 'settings.themeLightDesc' },
+  { value: 'dark', titleKey: 'settings.themeDark', descKey: 'settings.themeDarkDesc' },
+  { value: 'system', titleKey: 'settings.themeSystem', descKey: 'settings.themeSystemDesc' },
 ]
 
 // ---------- 通用:侧边栏打开方式 ----------
 const openModeOptions = [
-  { value: 'click', title: '单击打开', desc: '单击主机即可打开连接。' },
-  { value: 'dblclick', title: '双击打开', desc: '双击主机打开连接。' },
+  { value: 'click', titleKey: 'settings.openModeClick', descKey: 'settings.openModeClickDesc' },
+  { value: 'dblclick', titleKey: 'settings.openModeDblclick', descKey: 'settings.openModeDblclickDesc' },
 ]
 
-// ---------- MCP:路径白名单 / 可见主机 / 工具权限 ----------
+// ---------- MCP:接入 / 管理 tab ----------
+const mcpTab = ref('access')
+
+// 接入配置 JSON:同源 /mcp 端点;口令不出服务端,只给占位符让用户自行替换
+// (WEBSSH_MCP_TOKEN 环境变量 > mcp.json 的 token 字段 > 锁屏密码)
+const accessConfigJson = computed(() =>
+  JSON.stringify(
+    {
+      mcpServers: {
+        webssh: {
+          url: `${window.location.origin}/mcp`,
+          headers: { Authorization: `Bearer ${t('settings.accessTokenHint')}` },
+        },
+      },
+    },
+    null,
+    2,
+  ),
+)
+
+async function copyAccessConfig() {
+  try {
+    await navigator.clipboard.writeText(accessConfigJson.value)
+    ElMessage.success(t('settings.accessCopied'))
+  } catch {
+    ElMessage.error(t('settings.copyFailed'))
+  }
+}
+
+// ---------- MCP 管理:路径白名单 / 可见主机 / 工具权限 ----------
 const wl = reactive({ enabled: false, paths: [] })
 const vh = reactive({ enabled: false, ids: [] })
 const tf = ref([]) // 工具白名单:显式列表,空 = 不暴露任何工具
@@ -58,24 +89,24 @@ const newPath = ref('')
 const mcpSaving = ref(false)
 // 全部主机(按分组组织)与工具目录
 const hostGroups = ref([])
-const toolCatalog = [
-  { name: 'ssh_list_hosts', label: '主机列表' },
-  { name: 'ssh_host_info', label: '主机详情' },
-  { name: 'ssh_test_connection', label: '测试连接' },
-  { name: 'ssh_create_host', label: '新建主机' },
-  { name: 'ssh_edit_host', label: '编辑主机' },
-  { name: 'ssh_duplicate_host', label: '复制主机' },
-  { name: 'ssh_delete_host', label: '删除主机' },
-  { name: 'ssh_list_sessions', label: '活跃会话' },
-  { name: 'ssh_exec', label: '执行命令' },
-  { name: 'ssh_download_file', label: '文件下载' },
-  { name: 'ssh_system_info', label: '系统信息' },
-  { name: 'ssh_cpu_memory', label: 'CPU/内存' },
-  { name: 'ssh_disk_usage', label: '磁盘空间' },
-  { name: 'ssh_network_status', label: '网络状态' },
-  { name: 'ssh_service_status', label: '服务状态' },
-  { name: 'ssh_docker_status', label: 'Docker 状态' },
-  { name: 'ssh_k8s_status', label: 'K8s 状态' },
+const toolNames = [
+  'ssh_list_hosts',
+  'ssh_host_info',
+  'ssh_test_connection',
+  'ssh_create_host',
+  'ssh_edit_host',
+  'ssh_duplicate_host',
+  'ssh_delete_host',
+  'ssh_list_sessions',
+  'ssh_exec',
+  'ssh_download_file',
+  'ssh_system_info',
+  'ssh_cpu_memory',
+  'ssh_disk_usage',
+  'ssh_network_status',
+  'ssh_service_status',
+  'ssh_docker_status',
+  'ssh_k8s_status',
 ]
 
 async function saveMcpSettings() {
@@ -91,7 +122,7 @@ async function saveMcpSettings() {
     vh.enabled = res.visible_hosts.enabled
     vh.ids = res.visible_hosts.ids || []
     tf.value = res.tool_filter.tools || []
-    ElMessage.success('MCP 设置已保存并生效')
+    ElMessage.success(t('settings.mcpSaved'))
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -105,9 +136,9 @@ function addWhitelistPath() {
   newPath.value = ''
   if (!p) return
   if (!p.startsWith('/') && !p.startsWith('~')) {
-    return ElMessage.warning('路径须为绝对路径(以 / 开头,或以 ~/ 表示主目录)')
+    return ElMessage.warning(t('settings.warnPathAbsolute'))
   }
-  if (wl.paths.includes(p)) return ElMessage.warning('路径已存在')
+  if (wl.paths.includes(p)) return ElMessage.warning(t('settings.warnPathExists'))
   wl.paths.push(p)
   saveMcpSettings()
 }
@@ -141,7 +172,7 @@ function toggleHost(h) {
   saveMcpSettings()
 }
 
-// ---------- 工具权限 ----------
+// ---------- 工具权限:单个工具勾选 ----------
 function toggleTool(name) {
   const i = tf.value.indexOf(name)
   if (i >= 0) tf.value.splice(i, 1)
@@ -186,27 +217,27 @@ const osInfo = (() => {
   if (/Android/i.test(ua)) return 'Android'
   if (/iPhone|iPad/i.test(ua)) return 'iOS'
   if (/Linux/i.test(ua)) return 'Linux'
-  return '未知'
+  return t('common.unknown')
 })()
 const archInfo = (() => {
   if (/x86_64|x64|wow64/i.test(ua)) return 'x86_64'
   if (/arm64|aarch64/i.test(ua)) return 'arm64'
-  return '未知'
+  return t('common.unknown')
 })()
 
-const supportItems = [
-  { label: '当前版本', value: APP_VERSION },
-  { label: '操作系统', value: osInfo },
-  { label: '系统架构', value: archInfo },
-]
+const supportItems = computed(() => [
+  { label: t('settings.version'), value: APP_VERSION },
+  { label: t('settings.os'), value: osInfo },
+  { label: t('settings.arch'), value: archInfo },
+])
 
 async function copySupportInfo() {
-  const text = `版本: ${APP_VERSION}\n操作系统: ${osInfo}\n系统架构: ${archInfo}`
+  const text = t('settings.supportText', { v: APP_VERSION, o: osInfo, a: archInfo })
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制支持信息')
+    ElMessage.success(t('settings.copied'))
   } catch {
-    ElMessage.error('复制失败')
+    ElMessage.error(t('settings.copyFailed'))
   }
 }
 </script>
@@ -222,13 +253,13 @@ async function copySupportInfo() {
           :class="{ active: activeMenu === m.key }"
           @click="activeMenu = m.key"
         >
-          {{ m.label }}
+          {{ t('settings.' + m.key) }}
         </div>
       </aside>
       <div class="settings-body">
         <div v-if="activeMenu === 'general'" class="settings-pane">
           <div class="settings-section">
-            <div class="settings-card-title">主题</div>
+            <div class="settings-card-title">{{ t('settings.theme') }}</div>
             <div class="settings-options">
               <div
                 v-for="opt in themeOptions"
@@ -237,13 +268,34 @@ async function copySupportInfo() {
                 :class="{ active: settings.theme === opt.value }"
                 @click="settings.theme = opt.value"
               >
-                <div class="settings-option-title">{{ opt.title }}</div>
-                <div class="settings-option-desc">{{ opt.desc }}</div>
+                <div class="settings-option-title">{{ t(opt.titleKey) }}</div>
+                <div class="settings-option-desc">{{ t(opt.descKey) }}</div>
               </div>
             </div>
           </div>
           <div class="settings-section">
-            <div class="settings-card-title">侧边栏打开方式</div>
+            <div class="settings-card-title">{{ t('settings.language') }}</div>
+            <div class="settings-card-desc">{{ t('settings.languageDesc') }}</div>
+            <el-select
+              v-model="settings.language"
+              class="language-select"
+              :aria-label="t('settings.language')"
+            >
+              <el-option
+                v-for="opt in localeOptions"
+                :key="opt.value"
+                :value="opt.value"
+                :label="opt.label"
+              >
+                <span class="language-option">
+                  <span class="language-flag">{{ opt.flag }}</span>
+                  <span>{{ opt.label }}</span>
+                </span>
+              </el-option>
+            </el-select>
+          </div>
+          <div class="settings-section">
+            <div class="settings-card-title">{{ t('settings.openMode') }}</div>
             <div class="settings-options">
               <div
                 v-for="opt in openModeOptions"
@@ -252,158 +304,194 @@ async function copySupportInfo() {
                 :class="{ active: settings.sidebarOpenMode === opt.value }"
                 @click="settings.sidebarOpenMode = opt.value"
               >
-                <div class="settings-option-title">{{ opt.title }}</div>
-                <div class="settings-option-desc">{{ opt.desc }}</div>
+                <div class="settings-option-title">{{ t(opt.titleKey) }}</div>
+                <div class="settings-option-desc">{{ t(opt.descKey) }}</div>
               </div>
             </div>
           </div>
         </div>
         <div v-else-if="activeMenu === 'security'" class="settings-pane">
           <div class="settings-section">
-            <div class="settings-card-title">修改启动密码</div>
-            <div class="settings-card-desc">用于解锁本工具的启动密码,修改后立即生效,当前设备保持解锁。</div>
+            <div class="settings-card-title">{{ t('settings.changePwd') }}</div>
+            <div class="settings-card-desc">{{ t('settings.changePwdDesc') }}</div>
             <el-form label-position="top" class="security-form" @submit.prevent>
-              <el-form-item label="当前密码">
+              <el-form-item :label="t('settings.currentPwd')">
                 <el-input
                   v-model="pwdForm.current"
                   type="password"
                   show-password
                   autocomplete="current-password"
-                  placeholder="请输入当前密码"
+                  :placeholder="t('settings.currentPwdPlaceholder')"
                 />
               </el-form-item>
-              <el-form-item label="新密码">
+              <el-form-item :label="t('settings.newPwd')">
                 <el-input
                   v-model="pwdForm.next"
                   type="password"
                   show-password
                   autocomplete="new-password"
-                  placeholder="至少 4 位"
+                  :placeholder="t('settings.pwdMinHint')"
                 />
               </el-form-item>
-              <el-form-item label="重复新密码">
+              <el-form-item :label="t('settings.repeatPwd')">
                 <el-input
                   v-model="pwdForm.repeat"
                   type="password"
                   show-password
                   autocomplete="new-password"
-                  placeholder="再次输入新密码"
+                  :placeholder="t('settings.repeatPwdPlaceholder')"
                 />
               </el-form-item>
               <el-form-item>
                 <el-button type="primary" :loading="pwdSaving" @click="submitChangePassword">
-                  修改密码
+                  {{ t('settings.changePwdBtn') }}
                 </el-button>
               </el-form-item>
             </el-form>
           </div>
         </div>
         <div v-else-if="activeMenu === 'mcp'" class="settings-pane">
-          <div class="settings-section">
-            <div class="settings-card-title">路径白名单</div>
-            <div class="settings-card-desc">
-              开启后,MCP 的 ssh_exec 命令与文件下载仅允许访问下列前缀内的路径;默认关闭,不做路径限制。
+          <div class="settings-options mcp-mode">
+            <div
+              class="settings-option"
+              :class="{ active: mcpTab === 'access' }"
+              @click="mcpTab = 'access'"
+            >
+              <div class="settings-option-title">{{ t('settings.mcpAccess') }}</div>
+              <div class="settings-option-desc">{{ t('settings.mcpAccessDesc') }}</div>
             </div>
-            <div class="wl-toggle">
-              <el-switch v-model="wl.enabled" :loading="mcpSaving" @change="saveMcpSettings" />
-              <span>{{ wl.enabled ? '已开启(仅允许白名单内路径)' : '已关闭(不限制路径)' }}</span>
+            <div
+              class="settings-option"
+              :class="{ active: mcpTab === 'manage' }"
+              @click="mcpTab = 'manage'"
+            >
+              <div class="settings-option-title">{{ t('settings.mcpManage') }}</div>
+              <div class="settings-option-desc">{{ t('settings.mcpManageDesc') }}</div>
             </div>
-            <template v-if="wl.enabled">
-              <div class="wl-list">
-                <div v-for="p in wl.paths" :key="p" class="wl-item">
-                  <span class="wl-path">{{ p }}</span>
-                  <el-button size="small" text type="danger" @click="removeWhitelistPath(p)">删除</el-button>
-                </div>
-                <div v-if="!wl.paths.length" class="wl-empty">暂无路径;不添加任何路径时所有路径访问都会被拒绝。</div>
-              </div>
-              <div class="wl-add">
+          </div>
+          <template v-if="mcpTab === 'access'">
+            <div class="settings-section">
+              <div class="settings-card-title">{{ t('settings.accessTitle') }}</div>
+              <div class="settings-card-desc">{{ t('settings.accessDesc') }}</div>
+              <div class="access-config">
                 <el-input
-                  v-model="newPath"
-                  placeholder="如 /var/log/ 或 ~/data"
-                  @keyup.enter="addWhitelistPath"
+                  :model-value="accessConfigJson"
+                  type="textarea"
+                  :rows="10"
+                  readonly
                 />
-                <el-button type="primary" :loading="mcpSaving" @click="addWhitelistPath">添加</el-button>
+                <el-button
+                  class="access-copy"
+                  size="small"
+                  :icon="DocumentCopy"
+                  :title="t('common.copy')"
+                  :aria-label="t('common.copy')"
+                  @click="copyAccessConfig"
+                />
               </div>
-            </template>
-          </div>
-          <div class="settings-section">
-            <div class="settings-card-title">可见主机</div>
-            <div class="settings-card-desc">
-              开启后,MCP 仅能看到勾选的主机(可按分组折叠勾选);默认关闭,全部主机可见。未勾选的主机对 MCP 完全不可见。
             </div>
-            <div class="wl-toggle">
-              <el-switch v-model="vh.enabled" :loading="mcpSaving" @change="saveMcpSettings" />
-              <span>{{ vh.enabled ? `已开启(已选 ${vh.ids.length} 台)` : '已关闭(全部主机可见)' }}</span>
+          </template>
+          <template v-else>
+            <div class="settings-section">
+              <div class="settings-card-title">{{ t('settings.pathWhitelist') }}</div>
+              <div class="settings-card-desc">{{ t('settings.pathWhitelistDesc') }}</div>
+              <div class="wl-toggle">
+                <el-switch v-model="wl.enabled" :loading="mcpSaving" @change="saveMcpSettings" />
+                <span>{{ wl.enabled ? t('settings.wlOn') : t('settings.wlOff') }}</span>
+              </div>
+              <template v-if="wl.enabled">
+                <div class="wl-list">
+                  <div v-for="p in wl.paths" :key="p" class="wl-item">
+                    <span class="wl-path">{{ p }}</span>
+                    <el-button size="small" text type="danger" @click="removeWhitelistPath(p)">{{ t('common.delete') }}</el-button>
+                  </div>
+                  <div v-if="!wl.paths.length" class="wl-empty">{{ t('settings.wlEmpty') }}</div>
+                </div>
+                <div class="wl-add">
+                  <el-input
+                    v-model="newPath"
+                    :placeholder="t('settings.wlPlaceholder')"
+                    @keyup.enter="addWhitelistPath"
+                  />
+                  <el-button type="primary" :loading="mcpSaving" @click="addWhitelistPath">{{ t('common.add') }}</el-button>
+                </div>
+              </template>
             </div>
-            <template v-if="vh.enabled">
-              <div class="vh-scroll">
-                <el-collapse>
-                  <el-collapse-item
-                    v-for="g in hostGroups"
-                    :key="g.group"
-                    :name="g.group || '__ungrouped__'"
-                  >
-                    <template #title>
-                      <span class="vh-group-title" @click.stop>
+            <div class="settings-section">
+              <div class="settings-card-title">{{ t('settings.visibleHosts') }}</div>
+              <div class="settings-card-desc">{{ t('settings.visibleHostsDesc') }}</div>
+              <div class="wl-toggle">
+                <el-switch v-model="vh.enabled" :loading="mcpSaving" @change="saveMcpSettings" />
+                <span>{{ vh.enabled ? t('settings.vhOn', { n: vh.ids.length }) : t('settings.vhOff') }}</span>
+              </div>
+              <template v-if="vh.enabled">
+                <div class="vh-scroll">
+                  <el-collapse>
+                    <el-collapse-item
+                      v-for="g in hostGroups"
+                      :key="g.group"
+                      :name="g.group || '__ungrouped__'"
+                    >
+                      <template #title>
+                        <span class="vh-group-title" @click.stop>
+                          <el-checkbox
+                            :model-value="isGroupAll(g)"
+                            :indeterminate="isGroupSome(g)"
+                            @change="toggleGroup(g)"
+                          >
+                            {{ g.group || t('host.ungrouped') }}
+                          </el-checkbox>
+                          <span class="vh-host-addr">{{ t('settings.hostCount', { n: g.hosts.length }) }}</span>
+                        </span>
+                      </template>
+                      <div class="vh-hosts">
                         <el-checkbox
-                          :model-value="isGroupAll(g)"
-                          :indeterminate="isGroupSome(g)"
-                          @change="toggleGroup(g)"
+                          v-for="h in g.hosts"
+                          :key="h.id"
+                          :model-value="vh.ids.includes(h.id)"
+                          @change="toggleHost(h)"
                         >
-                          {{ g.group || '未分组' }}
+                          {{ h.name }}
+                          <span class="vh-host-addr">{{ h.host }}</span>
                         </el-checkbox>
-                        <span class="vh-host-addr">{{ g.hosts.length }} 台</span>
-                      </span>
-                    </template>
-                    <div class="vh-hosts">
-                      <el-checkbox
-                        v-for="h in g.hosts"
-                        :key="h.id"
-                        :model-value="vh.ids.includes(h.id)"
-                        @change="toggleHost(h)"
-                      >
-                        {{ h.name }}
-                        <span class="vh-host-addr">{{ h.host }}</span>
-                      </el-checkbox>
-                    </div>
-                  </el-collapse-item>
-                </el-collapse>
-                <div v-if="!hostGroups.length" class="wl-empty">没有可用主机。</div>
+                      </div>
+                    </el-collapse-item>
+                  </el-collapse>
+                  <div v-if="!hostGroups.length" class="wl-empty">{{ t('settings.noHosts') }}</div>
+                </div>
+              </template>
+            </div>
+            <div class="settings-section">
+              <div class="settings-card-title">{{ t('settings.toolPerm') }}</div>
+              <div class="settings-card-desc">{{ t('settings.toolPermDesc') }}</div>
+              <div class="wl-toggle">
+                <span>{{ t('settings.selectedCount', { a: tf.length, b: toolNames.length }) }}</span>
               </div>
-            </template>
-          </div>
-          <div class="settings-section">
-            <div class="settings-card-title">工具权限</div>
-            <div class="settings-card-desc">
-              工具白名单:仅勾选的工具对 MCP 暴露;全部不勾选时不暴露任何工具。
-            </div>
-            <div class="wl-toggle">
-              <span>已选 {{ tf.length }}/{{ toolCatalog.length }}</span>
-            </div>
-            <div class="tf-scroll">
-              <div class="tf-grid">
-                <el-checkbox
-                  v-for="t in toolCatalog"
-                  :key="t.name"
-                  :model-value="tf.includes(t.name)"
-                  @change="toggleTool(t.name)"
-                >
-                  {{ t.label }}
-                  <span class="vh-host-addr">{{ t.name }}</span>
-                </el-checkbox>
+              <div class="tf-scroll">
+                <div class="tf-grid">
+                  <el-checkbox
+                    v-for="name in toolNames"
+                    :key="name"
+                    :model-value="tf.includes(name)"
+                    @change="toggleTool(name)"
+                  >
+                    {{ t('settings.tool_' + name) }}
+                    <span class="vh-host-addr">{{ name }}</span>
+                  </el-checkbox>
+                </div>
+                <div v-if="!tf.length" class="wl-empty">{{ t('settings.noToolsSelected') }}</div>
               </div>
-              <div v-if="!tf.length" class="wl-empty">未勾选任何工具;此时 MCP 将不暴露任何工具。</div>
             </div>
-          </div>
+          </template>
         </div>
         <div v-else-if="activeMenu === 'about'" class="settings-pane">
           <div class="settings-card">
             <div class="settings-card-head">
               <div>
-                <div class="settings-card-title">支持信息</div>
-                <div class="settings-card-desc">提交 Issue 或寻求帮助时,可复制这些环境信息。</div>
+                <div class="settings-card-title">{{ t('settings.supportInfo') }}</div>
+                <div class="settings-card-desc">{{ t('settings.supportInfoDesc') }}</div>
               </div>
-              <el-button size="small" @click="copySupportInfo">复制支持信息</el-button>
+              <el-button size="small" @click="copySupportInfo">{{ t('settings.copySupport') }}</el-button>
             </div>
             <div class="support-grid">
               <div v-for="item in supportItems" :key="item.label" class="support-item">
@@ -416,9 +504,7 @@ async function copySupportInfo() {
       </div>
     </div>
     <footer class="settings-footer">
-      <el-button @click="$emit('close')">关闭</el-button>
-      <el-button type="primary" disabled>应用</el-button>
-      <el-button type="primary" disabled>应用并关闭</el-button>
+      <el-button @click="$emit('close')">{{ t('common.close') }}</el-button>
     </footer>
   </div>
 </template>

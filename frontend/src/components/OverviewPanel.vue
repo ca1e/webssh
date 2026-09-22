@@ -5,6 +5,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Connection, Link, Monitor, Refresh, Right, Cpu } from '@element-plus/icons-vue'
 import { authState, listSessions } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   hosts: { type: Array, default: () => [] },
@@ -61,43 +62,43 @@ const distBars = computed(() =>
   <!-- 首启无主机:只显示引导卡,不渲染一排 0 -->
   <div v-if="!total" class="ov-guide">
     <el-icon :size="42" class="ov-guide-icon"><Monitor /></el-icon>
-    <div class="ov-guide-title">还没有保存任何连接</div>
-    <div class="ov-guide-sub">创建第一个主机,或在顶部点击「新建连接」</div>
-    <el-button type="primary" :icon="Right" @click="$emit('create')">新建连接</el-button>
+    <div class="ov-guide-title">{{ t('overview.guideTitle') }}</div>
+    <div class="ov-guide-sub">{{ t('overview.guideSub') }}</div>
+    <el-button type="primary" :icon="Right" @click="$emit('create')">{{ t('app.newConnection') }}</el-button>
   </div>
 
   <div v-else class="ov">
     <div class="ov-cards">
       <div class="ov-card">
-        <div class="ov-card-head"><el-icon><Monitor /></el-icon><span>主机总数</span></div>
+        <div class="ov-card-head"><el-icon><Monitor /></el-icon><span>{{ t('overview.totalHosts') }}</span></div>
         <div class="ov-num">{{ total }}</div>
-        <div class="ov-sub">密码 {{ authPassCount }} · 密钥 {{ authKeyCount }}</div>
+        <div class="ov-sub">{{ t('overview.authStat', { pass: authPassCount, key: authKeyCount }) }}</div>
       </div>
       <div class="ov-card">
         <div class="ov-card-head">
-          <el-icon><Link /></el-icon><span>当前已连接</span>
+          <el-icon><Link /></el-icon><span>{{ t('overview.connected') }}</span>
           <el-button class="ov-refresh" text :icon="Refresh" :loading="loading" size="small" @click="refresh" />
         </div>
         <div class="ov-num" :class="{ 'ov-num-muted': connected === null }">
           {{ connected === null ? '—' : connected }}
         </div>
         <div class="ov-sub" v-if="connected !== null">SSH {{ connSsh }} · Telnet {{ connTelnet }}</div>
-        <div class="ov-sub" v-else>会话状态获取失败,点击刷新</div>
+        <div class="ov-sub" v-else>{{ t('overview.sessionFailed') }}</div>
       </div>
       <div class="ov-card">
-        <div class="ov-card-head"><el-icon><Connection /></el-icon><span>SSH 主机</span></div>
+        <div class="ov-card-head"><el-icon><Connection /></el-icon><span>{{ t('overview.sshHosts') }}</span></div>
         <div class="ov-num">{{ sshCount }}</div>
-        <div class="ov-sub">经跳板机 {{ jumpCount }}</div>
+        <div class="ov-sub">{{ t('overview.viaJumpCount', { n: jumpCount }) }}</div>
       </div>
       <div class="ov-card">
-        <div class="ov-card-head"><el-icon><Cpu /></el-icon><span>Telnet 主机</span></div>
+        <div class="ov-card-head"><el-icon><Cpu /></el-icon><span>{{ t('overview.telnetHosts') }}</span></div>
         <div class="ov-num">{{ telnetCount }}</div>
-        <div class="ov-sub">{{ groupCount ? `分组 ${groupCount} 个` : '未使用分组' }}</div>
+        <div class="ov-sub">{{ groupCount ? t('overview.groupCount', { n: groupCount }) : t('overview.noGroups') }}</div>
       </div>
     </div>
 
     <div class="ov-dist">
-      <div class="ov-dist-title">连接类型分布</div>
+      <div class="ov-dist-title">{{ t('overview.distTitle') }}</div>
       <div class="ov-dist-bar">
         <div
           v-for="b in distBars"
@@ -111,12 +112,12 @@ const distBars = computed(() =>
       </div>
       <div class="ov-dist-legend">
         <span v-for="b in distBars" :key="b.cls">
-          <i class="ov-dot" :class="b.cls" />{{ b.name }} {{ b.n }} 台({{ ((b.n / total) * 100).toFixed(0) }}%)
+          <i class="ov-dot" :class="b.cls" />{{ t('overview.legendItem', { name: b.name, n: b.n, p: ((b.n / total) * 100).toFixed(0) }) }}
         </span>
       </div>
     </div>
 
-    <div class="ov-hint">点击左侧主机的「连接」开始会话(可右键主机进行重命名、复制等操作)</div>
+    <div class="ov-hint">{{ t('overview.hint') }}</div>
   </div>
 </template>
 

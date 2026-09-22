@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useContextMenu } from '../contextMenu'
 import { exportBundle, importBundle } from '../api'
 import { settings } from '../settings'
+import { t } from '../i18n'
 
 const props = defineProps({
   hosts: { type: Array, default: () => [] },
@@ -26,12 +27,13 @@ function saveCollapsed() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([...collapsed]))
 }
 
-// 按 group 聚合,未填 group 归入"未分组";分组顺序按首次出现排序
+// 按 group 聚合,未填 group 归入未分组(内部键为空串,显示名走 i18n);
+// 分组顺序按首次出现排序
 const groups = computed(() => {
   const order = []
   const map = {}
   for (const h of props.hosts) {
-    const g = h.group || '未分组'
+    const g = h.group || ''
     if (!map[g]) {
       map[g] = []
       order.push(g)
@@ -40,6 +42,9 @@ const groups = computed(() => {
   }
   return order.map((g) => ({ name: g, hosts: map[g] }))
 })
+
+// 分组显示名:空串 = 未分组
+const groupLabel = (name) => name || t('host.ungrouped')
 
 function toggleGroup(name) {
   if (collapsed.has(name)) collapsed.delete(name)
@@ -53,7 +58,7 @@ function isCollapsed(name) {
 
 // 按设置的主机打开方式触发连接:双击模式保持原逻辑,单击模式单击即连
 function connTitle(h) {
-  return `${settings.sidebarOpenMode === 'click' ? '单击' : '双击'}连接 ${h.name},右键更多操作`
+  return t(settings.sidebarOpenMode === 'click' ? 'sidebar.clickToConnect' : 'sidebar.dblclickToConnect', { name: h.name })
 }
 function onClick(h) {
   if (settings.sidebarOpenMode === 'click') emit('connect', h)
@@ -129,20 +134,20 @@ function openExportDialog() {
 
 async function doExportEncrypted() {
   if (exportDlg.password.length < 4) {
-    ElMessage.warning('导出口令至少 4 位')
+    ElMessage.warning(t('sidebar.pwdTooShort'))
     return
   }
   if (exportDlg.password !== exportDlg.confirm) {
-    ElMessage.warning('两次输入的口令不一致')
+    ElMessage.warning(t('sidebar.pwdMismatch'))
     return
   }
   try {
     const { blob, filename } = await exportBundle('encrypted', exportDlg.password)
     await saveBlob(blob, filename)
     exportDlg.show = false
-    ElMessage.success('已导出加密 bundle(凭据已加密,导入需口令)')
+    ElMessage.success(t('sidebar.exportedEncrypted'))
   } catch (e) {
-    ElMessage.error(e.message || '导出失败')
+    ElMessage.error(e.message || t('sidebar.exportFailed'))
   }
 }
 
@@ -152,9 +157,9 @@ async function doExportPlaintext() {
     const { blob, filename } = await exportBundle('plaintext', '')
     await saveBlob(blob, filename)
     exportDlg.show = false
-    ElMessage.warning('已导出无密码 bundle(含明文凭据,请妥善保管)')
+    ElMessage.warning(t('sidebar.exportedPlaintext'))
   } catch (e) {
-    ElMessage.error(e.message || '导出失败')
+    ElMessage.error(e.message || t('sidebar.exportFailed'))
   }
 }
 
@@ -174,7 +179,7 @@ async function onImportFile(e) {
       const doc = JSON.parse(await file.text())
       if (doc && typeof doc === 'object' && doc.kdf) {
         const { value } = await ElMessageBox.prompt(
-          '该 bundle 已加密,请输入导出时设置的口令', '导入口令', { inputType: 'password' }
+          t('sidebar.importPrompt'), t('sidebar.importPwdTitle'), { inputType: 'password' }
         )
         password = value || ''
       }
@@ -183,10 +188,10 @@ async function onImportFile(e) {
       // 非 JSON 文件交给后端判定格式并给出引导文案
     }
     const res = await importBundle(file, password)
-    ElMessage.success(`已导入 ${res.count} 台主机`)
+    ElMessage.success(t('sidebar.imported', { n: res.count }))
     emit('refresh')
   } catch (err) {
-    ElMessage.error(err.message || '导入失败')
+    ElMessage.error(err.message || t('sidebar.importFailed'))
   }
 }
 </script>
@@ -194,17 +199,21 @@ async function onImportFile(e) {
 <template>
   <aside class="sidebar">
     <div style="padding: 10px 10px 0; display: flex; justify-content: flex-end">
-      <el-button text style="padding: 8px" :icon="Operation" title="导入 / 导出主机列表" @click.stop="onImexClick" />
-      <el-button text style="padding: 8px" :icon="Refresh" @click="$emit('refresh')" title="刷新列表" />
-      <el-button text style="padding: 8px" :icon="DArrowLeft" @click="$emit('collapse')" title="收起主机列表" />
+      <el-button text style="padding: 8px" :icon="Operation" :title="t('sidebar.imexTitle')" @click.stop="onImexClick" />
+      <el-button text style="padding: 8px" :icon="Refresh" @click="$emit('refresh')" :title="t('sidebar.refreshList')" />
+      <el-button text style="padding: 8px" :icon="DArrowLeft" @click="$emit('collapse')" :title="t('sidebar.collapseList')" />
     </div>
     <div class="conn-list">
       <template v-for="g in groups" :key="g.name">
-        <div class="group-header" :title="`点击${isCollapsed(g.name) ? '展开' : '收起'}`" @click="toggleGroup(g.name)">
+        <div
+          class="group-header"
+          :title="isCollapsed(g.name) ? t('sidebar.clickToExpand') : t('sidebar.clickToCollapse')"
+          @click="toggleGroup(g.name)"
+        >
           <el-icon class="group-arrow" :class="{ collapsed: isCollapsed(g.name) }">
             <ArrowDown />
           </el-icon>
-          <span class="group-name">{{ g.name }}</span>
+          <span class="group-name">{{ groupLabel(g.name) }}</span>
           <span class="group-count">{{ g.hosts.length }}</span>
         </div>
         <template v-if="!isCollapsed(g.name)">
@@ -228,7 +237,7 @@ async function onImportFile(e) {
           </div>
         </template>
       </template>
-      <div v-if="!hosts.length" class="empty-hint">暂无主机,点击「新建连接」添加</div>
+      <div v-if="!hosts.length" class="empty-hint">{{ t('sidebar.empty') }}</div>
     </div>
 
     <!-- 右键菜单 -->
@@ -240,10 +249,10 @@ async function onImportFile(e) {
         :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @contextmenu.prevent
       >
-        <div class="ctx-item" @click.stop="run('connect')">连接</div>
-        <div class="ctx-item" @click.stop="run('edit')">编辑</div>
-        <div class="ctx-item" @click.stop="run('duplicate')">复制</div>
-        <div class="ctx-item danger" @click.stop="run('delete')">删除</div>
+        <div class="ctx-item" @click.stop="run('connect')">{{ t('sidebar.connect') }}</div>
+        <div class="ctx-item" @click.stop="run('edit')">{{ t('common.edit') }}</div>
+        <div class="ctx-item" @click.stop="run('duplicate')">{{ t('common.duplicate') }}</div>
+        <div class="ctx-item danger" @click.stop="run('delete')">{{ t('common.delete') }}</div>
       </div>
     </teleport>
 
@@ -256,33 +265,33 @@ async function onImportFile(e) {
         :style="{ left: imex.x + 'px', top: imex.y + 'px' }"
         @contextmenu.prevent
       >
-        <div class="ctx-item" @click.stop="openExportDialog">导出主机列表(加密)</div>
-        <div class="ctx-item" @click.stop="doImport">导入主机列表</div>
+        <div class="ctx-item" @click.stop="openExportDialog">{{ t('sidebar.exportEncrypted') }}</div>
+        <div class="ctx-item" @click.stop="doImport">{{ t('sidebar.importHosts') }}</div>
       </div>
     </teleport>
 
     <!-- 加密导出对话框:口令两次确认;无密码导出为独立显式按钮 -->
-    <el-dialog v-model="exportDlg.show" title="导出主机列表" width="380px" append-to-body>
+    <el-dialog v-model="exportDlg.show" :title="t('sidebar.exportTitle')" width="380px" append-to-body>
       <el-input
         v-model="exportDlg.password"
         type="password"
         show-password
-        placeholder="导出口令(至少 4 位,导入时需提供)"
+        :placeholder="t('sidebar.exportPwdPlaceholder')"
         style="margin-bottom: 10px"
       />
       <el-input
         v-model="exportDlg.confirm"
         type="password"
         show-password
-        placeholder="再次输入口令确认"
+        :placeholder="t('sidebar.exportPwdConfirmPlaceholder')"
       />
       <div style="color: var(--el-text-color-secondary); font-size: 12px; margin-top: 8px">
-        凭据将以口令加密(scrypt + AES-GCM);口令不与服务器启动密码通用,遗失后无法导入。
+        {{ t('sidebar.exportNote') }}
       </div>
       <template #footer>
-        <el-button type="warning" plain @click="doExportPlaintext">无密码导出</el-button>
-        <el-button @click="exportDlg.show = false">取消</el-button>
-        <el-button type="primary" @click="doExportEncrypted">加密导出</el-button>
+        <el-button type="warning" plain @click="doExportPlaintext">{{ t('sidebar.exportPlaintext') }}</el-button>
+        <el-button @click="exportDlg.show = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doExportEncrypted">{{ t('sidebar.exportEncryptedBtn') }}</el-button>
       </template>
     </el-dialog>
 

@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css'
 import { terminalWSUrl } from '../api'
 import { emitCwd } from '../cwdBus'
 import { useContextMenu } from '../contextMenu'
+import { t } from '../i18n'
 
 const props = defineProps({
   sid: { type: String, required: true },
@@ -43,7 +44,7 @@ async function doCopy() {
   if (!sel) return
   try {
     await navigator.clipboard.writeText(sel)
-    ElMessage.success('已复制')
+    ElMessage.success(t('term.copied'))
   } catch {
     document.execCommand('copy')
   }
@@ -54,7 +55,7 @@ async function doPaste() {
     const text = await navigator.clipboard.readText()
     if (text) term.paste(text)
   } catch {
-    ElMessage.error('粘贴失败:浏览器未授权剪贴板读取')
+    ElMessage.error(t('term.pasteFailed'))
   }
 }
 
@@ -234,7 +235,7 @@ onBeforeUnmount(() => {
     <el-icon
       v-if="closable"
       class="term-close"
-      title="关闭此终端"
+      :title="t('term.closeThis')"
       @click.stop="emit('close')"
     >
       <Close />
@@ -242,15 +243,15 @@ onBeforeUnmount(() => {
     <div class="term-mask" v-if="status !== 'open'">
       <template v-if="status === 'connecting'">
         <el-icon :size="28" class="is-loading"><Loading /></el-icon>
-        <span class="mask-text">正在连接 {{ host }} …</span>
+        <span class="mask-text">{{ t('term.connecting', { host }) }}</span>
       </template>
       <template v-else-if="status === 'exited'">
-        <span class="mask-text">远程会话已结束(shell 退出)</span>
-        <el-button size="small" @click="reconnect">重新打开 Shell</el-button>
+        <span class="mask-text">{{ t('term.exited') }}</span>
+        <el-button size="small" @click="reconnect">{{ t('term.reopenShell') }}</el-button>
       </template>
       <template v-else>
-        <span class="mask-text">连接已断开(会话可能已被关闭或网络中断)</span>
-        <el-button size="small" type="primary" @click="reconnect">重新连接</el-button>
+        <span class="mask-text">{{ t('term.disconnected') }}</span>
+        <el-button size="small" type="primary" @click="reconnect">{{ t('term.reconnect') }}</el-button>
       </template>
     </div>
 
@@ -263,15 +264,15 @@ onBeforeUnmount(() => {
         :style="{ left: tmenu.x + 'px', top: tmenu.y + 'px' }"
         @contextmenu.prevent
       >
-        <div class="ctx-item" @click.stop="doSelectAll(); closeTermMenu()">全选</div>
+        <div class="ctx-item" @click.stop="doSelectAll(); closeTermMenu()">{{ t('term.selectAll') }}</div>
         <div
           class="ctx-item"
           :class="{ disabled: !hasSelection }"
           @click.stop="hasSelection && (doCopy(), closeTermMenu())"
         >
-          复制
+          {{ t('term.copy') }}
         </div>
-        <div class="ctx-item" @click.stop="doPaste(); closeTermMenu()">粘贴</div>
+        <div class="ctx-item" @click.stop="doPaste(); closeTermMenu()">{{ t('term.paste') }}</div>
       </div>
     </teleport>
   </div>

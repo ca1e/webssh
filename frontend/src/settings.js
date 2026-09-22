@@ -18,6 +18,8 @@ export const settings = reactive({
   sidebarOpenMode: saved.sidebarOpenMode === 'click' ? 'click' : 'dblclick',
   // 主题:light=浅色(默认,即原配色),dark=深色,system=跟随系统
   theme: ['light', 'dark', 'system'].includes(saved.theme) ? saved.theme : 'light',
+  // 界面语言:zh-CN=简体中文(默认),en=英文;由 src/i18n 消费,切换即热重载界面文案
+  language: ['zh-CN', 'en'].includes(saved.language) ? saved.language : 'zh-CN',
 })
 
 watch(settings, (v) => {

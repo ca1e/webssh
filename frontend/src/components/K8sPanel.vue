@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { k8sResources, k8sState } from '../api'
+import { t } from '../i18n'
 
 // K8s 面板:集群状态卡片 + Pod 列表(watch 增量流)。交互参考 Docker 面板,
 // 事件模型借鉴 Freelens 的 kube-watch-event:List 快照全量替换,
@@ -203,13 +204,13 @@ onBeforeUnmount(() => {
     <div class="panel-title">
       Kubernetes · {{ session.name }}
       <span style="flex: 1"></span>
-      <span class="ws-dot" :class="wsStatus" :title="`Pod 列表流:${wsStatus}`"></span>
-      <el-button size="small" :icon="Refresh" :loading="stateLoading" title="重新探测集群状态" @click="loadState(true)" />
+      <span class="ws-dot" :class="wsStatus" :title="t('k8s.streamStatus', { status: wsStatus })"></span>
+      <el-button size="small" :icon="Refresh" :loading="stateLoading" :title="t('k8s.reprobe')" @click="loadState(true)" />
     </div>
 
     <!-- kubectl 不可用 / 探测失败(空态样式与 Docker 面板一致) -->
     <div v-if="state && !state.available" class="empty-state">
-      <el-empty :description="state.error || '目标主机未安装 kubectl 或集群不可达'" :image-size="60" />
+      <el-empty :description="state.error || t('k8s.unreachable')" :image-size="60" />
     </div>
 
     <!-- 集群状态卡片 -->
@@ -217,14 +218,14 @@ onBeforeUnmount(() => {
       <div class="metric-card">
         <div class="card-title">{{ distLabel }}</div>
         <div class="metric-row"><span class="muted">Context</span><span style="font-family:monospace;font-size:11px">{{ state.context || '-' }}</span></div>
-        <div class="metric-row"><span class="muted">集群</span><span style="font-family:monospace;font-size:11px">{{ state.cluster || '-' }}</span></div>
-        <div class="metric-row"><span class="muted">版本</span><span style="font-family:monospace;font-size:11px">{{ state.version || '-' }}</span></div>
+        <div class="metric-row"><span class="muted">{{ t('k8s.cluster') }}</span><span style="font-family:monospace;font-size:11px">{{ state.cluster || '-' }}</span></div>
+        <div class="metric-row"><span class="muted">{{ t('k8s.version') }}</span><span style="font-family:monospace;font-size:11px">{{ state.version || '-' }}</span></div>
       </div>
       <div class="metric-card">
-        <div class="card-title">节点 / 地址</div>
-        <div class="metric-row"><span class="muted">节点</span><span style="font-family:monospace">{{ state.ready_nodes }}/{{ state.node_count }} Ready</span></div>
+        <div class="card-title">{{ t('k8s.nodesAddr') }}</div>
+        <div class="metric-row"><span class="muted">{{ t('k8s.nodes') }}</span><span style="font-family:monospace">{{ state.ready_nodes }}/{{ state.node_count }} Ready</span></div>
         <div class="metric-row"><span class="muted">API Server</span><span style="font-family:monospace;font-size:11px">{{ state.server || '-' }}</span></div>
-        <div class="metric-row" v-if="state.error"><span class="muted">提示</span><span class="k8s-warn">{{ state.error }}</span></div>
+        <div class="metric-row" v-if="state.error"><span class="muted">{{ t('k8s.hint') }}</span><span class="k8s-warn">{{ state.error }}</span></div>
       </div>
     </div>
 
@@ -239,14 +240,14 @@ onBeforeUnmount(() => {
           default-first-option
           style="width: 180px"
         >
-          <el-option label="全部命名空间" value="_all" />
+          <el-option :label="t('k8s.allNamespaces')" value="_all" />
           <el-option v-for="ns in namespaces" :key="ns" :label="ns" :value="ns" />
         </el-select>
         <el-input
           v-model="filterText"
           size="small"
           :icon="Search"
-          placeholder="过滤 Pod 名"
+          :placeholder="t('k8s.filterPods')"
           clearable
           style="width: 150px"
         />
@@ -257,42 +258,42 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="docker-table">
-        <el-table :data="podRows" size="small" style="width: 100%" empty-text="无 Pod(等待 watch 快照…)">
+        <el-table :data="podRows" size="small" style="width: 100%" :empty-text="t('k8s.noPods')">
           <el-table-column prop="name" label="Pod" min-width="140" show-overflow-tooltip />
-          <el-table-column prop="ns" label="命名空间" min-width="100" show-overflow-tooltip />
-          <el-table-column label="状态" width="90">
+          <el-table-column prop="ns" :label="t('k8s.colNamespace')" min-width="100" show-overflow-tooltip />
+          <el-table-column :label="t('common.colStatus')" width="90">
             <template #default="{ row }">
               <el-tag :type="phaseType(row.phase)" size="small">{{ row.phase }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="就绪" width="60">
+          <el-table-column :label="t('k8s.colReady')" width="60">
             <template #default="{ row }"><span style="font-family:monospace">{{ row.ready }}</span></template>
           </el-table-column>
-          <el-table-column label="重启" width="55">
+          <el-table-column :label="t('k8s.colRestarts')" width="55">
             <template #default="{ row }"><span style="font-family:monospace">{{ row.restarts }}</span></template>
           </el-table-column>
-          <el-table-column label="年龄" width="60">
+          <el-table-column :label="t('k8s.colAge')" width="60">
             <template #default="{ row }">{{ fmtAge(row.created) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="120" align="center">
+          <el-table-column :label="t('common.colActions')" width="120" align="center">
             <template #default="{ row }">
-              <el-button size="small" text type="primary" @click.stop="openLogs(row)">日志</el-button>
+              <el-button size="small" text type="primary" @click.stop="openLogs(row)">{{ t('k8s.logs') }}</el-button>
               <el-button
                 size="small"
                 text
                 type="success"
                 :disabled="row.phase !== 'Running'"
-                :title="row.phase !== 'Running' ? '仅 Running 的 Pod 可进入终端' : `容器: ${row.containers.join(', ')}`"
+                :title="row.phase !== 'Running' ? t('k8s.onlyRunningHint') : t('k8s.containers', { names: row.containers.join(', ') })"
                 @click.stop="openShell(row)"
               >
-                终端
+                {{ t('k8s.terminal') }}
               </el-button>
             </template>
           </el-table-column>
         </el-table>
       </div>
       <div class="muted" style="padding: 0 10px; font-size: 11px">
-        watch 实时推送(断线自动重连) · 默认容器;多容器 Pod 可在端口转发面板指定
+        {{ t('k8s.hint2') }}
       </div>
     </template>
   </div>
