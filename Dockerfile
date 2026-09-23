@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------- 阶段 2:编译 Go 单二进制(go:embed 打入 frontend/dist) ----------
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 # Go 模块代理(默认国内镜像;海外构建可 --build-arg GOPROXY=https://proxy.golang.org,direct)
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
